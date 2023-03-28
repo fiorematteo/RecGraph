@@ -28,6 +28,8 @@ pub mod pathwise_alignment_recombination;
 pub mod pathwise_alignment_semiglobal;
 /// Pathwise graph creation
 pub mod pathwise_graph;
+/// qgram optimization
+pub mod qgrams;
 pub mod recombination_output;
 /// Score matrix for each alignment type
 pub mod score_matrix;
@@ -35,5 +37,3 @@ pub mod score_matrix;
 pub mod sequences;
 /// Various and miscellaneous
 pub mod utils;
-/// qgram optimization
-pub mod qgrams;

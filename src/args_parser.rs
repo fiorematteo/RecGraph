@@ -144,6 +144,15 @@ struct Args {
         help = "Second adaptive banding par, number of basis added to both side of the band = b+f*L, l = length of the sequence"
     )]
     extra_f: f32,
+
+    #[clap(
+        help_heading = "Qgrams optimization",
+        default_value_t = 0,
+        short = 'q',
+        long = "qgrams-len",
+        help = "Length of qgrams, set to 0 to not use qgrams"
+    )]
+    qgrams_len: usize,
 }
 pub fn get_base_multi_recombination_cost() -> (i32, f32) {
     let args = Args::parse();
@@ -199,4 +208,8 @@ pub fn get_out_file() -> String {
 pub fn get_recombination_band_width() -> f32 {
     let args = Args::parse();
     args.rec_band_width
+}
+pub fn get_qgrams_lenght() -> usize {
+    let args = Args::parse();
+    args.qgrams_len
 }

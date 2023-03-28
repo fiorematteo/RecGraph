@@ -30,8 +30,7 @@ fn main() {
     let now = SystemTime::now();
 
     //get q lenght
-    let q = 5;
-    let use_qgrams = true;
+    let qgrams_len = args_parser::get_qgrams_lenght();
 
     // get sequence
     let (sequences, seq_names) = sequences::get_sequences(args_parser::get_sequence_path());
@@ -41,7 +40,7 @@ fn main() {
     let graph_struct = graph::read_graph(&graph_path, false);
 
     //optimize graph
-    let mut graph_optmizer = qgrams::get_optimizer(&graph_struct, q, use_qgrams);
+    let mut graph_optmizer = qgrams::get_optimizer(&graph_struct, qgrams_len);
 
     //get score matrix
     let score_matrix = score_matrix::create_score_matrix();
