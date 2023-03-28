@@ -20,6 +20,7 @@ pub fn read_graph(file_path: &str, amb_mode: bool) -> LnzGraph {
 /// lnz represents the label of each node   
 /// nwp(i) is true if node i has multiple predecessor   
 /// pred_hash contains the predecessor of each node with more than one predecessor   
+#[derive(Clone)]
 pub struct LnzGraph {
     pub lnz: Vec<char>,
     pub nwp: BitVec,

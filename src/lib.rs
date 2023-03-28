@@ -35,3 +35,5 @@ pub mod score_matrix;
 pub mod sequences;
 /// Various and miscellaneous
 pub mod utils;
+/// qgram optimization
+pub mod qgrams;

@@ -11,6 +11,7 @@ use recgraph::pathwise_alignment_recombination;
 use recgraph::pathwise_alignment_semiglobal;
 use recgraph::pathwise_graph;
 use recgraph::pathwise_graph::nodes_displacement_matrix;
+use recgraph::qgrams;
 use recgraph::score_matrix;
 use recgraph::sequences;
 use recgraph::utils;
@@ -28,12 +29,19 @@ static GLOBAL: Jemalloc = Jemalloc;
 fn main() {
     let now = SystemTime::now();
 
+    //get q lenght
+    let q = 5;
+    let use_qgrams = true;
+
     // get sequence
     let (sequences, seq_names) = sequences::get_sequences(args_parser::get_sequence_path());
 
     //get graph
     let graph_path = args_parser::get_graph_path();
     let graph_struct = graph::read_graph(&graph_path, false);
+
+    //optimize graph
+    let mut graph_optmizer = qgrams::get_optimizer(&graph_struct, q, use_qgrams);
 
     //get score matrix
     let score_matrix = score_matrix::create_score_matrix();
@@ -51,12 +59,13 @@ fn main() {
     match align_mode {
         //global alignment
         0 => {
-            let r_values = utils::set_r_values(
-                &graph_struct.nwp,
-                &graph_struct.pred_hash,
-                graph_struct.lnz.len(),
-            );
             for (i, seq) in sequences.iter().enumerate() {
+                let graph_struct = graph_optmizer.get_graph(seq);
+                let r_values = utils::set_r_values(
+                    &graph_struct.nwp,
+                    &graph_struct.pred_hash,
+                    graph_struct.lnz.len(),
+                );
                 let bases_to_add = (b + f * seq.len() as f32) as usize;
                 let alignment = if is_x86_feature_detected!("avx2") {
                     unsafe {
@@ -110,6 +119,7 @@ fn main() {
         //local alignment
         1 => {
             for (i, seq) in sequences.iter().enumerate() {
+                let graph_struct = graph_optmizer.get_graph(seq);
                 let alignment = if is_x86_feature_detected!("avx2") {
                     unsafe {
                         let temp_score = local_poa::exec_simd(
@@ -175,6 +185,7 @@ fn main() {
             let (g_open, g_ext) = args_parser::get_gap_open_gap_ext();
 
             for (i, seq) in sequences.iter().enumerate() {
+                let graph_struct = graph_optmizer.get_graph(seq);
                 let bases_to_add = (b + f * seq.len() as f32) as usize;
                 let alignment = gap_global_abpoa::exec(
                     seq,
@@ -219,6 +230,7 @@ fn main() {
         3 => {
             let (g_open, g_ext) = args_parser::get_gap_open_gap_ext();
             for (i, seq) in sequences.iter().enumerate() {
+                let graph_struct = graph_optmizer.get_graph(seq);
                 let alignment = gap_local_poa::exec(
                     seq,
                     (&seq_names[i], i + 1),
