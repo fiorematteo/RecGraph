@@ -40,7 +40,7 @@ fn main() {
     let graph_struct = graph::read_graph(&graph_path, false);
 
     //optimize graph
-    let mut graph_optmizer = qgrams::get_optimizer(&graph_struct, qgrams_len);
+    let mut graph_optimizer = qgrams::get_optimizer(&graph_struct, qgrams_len);
 
     //get score matrix
     let score_matrix = score_matrix::create_score_matrix();
@@ -59,7 +59,7 @@ fn main() {
         //global alignment
         0 => {
             for (i, seq) in sequences.iter().enumerate() {
-                let graph_struct = graph_optmizer.get_graph(seq);
+                let graph_struct = graph_optimizer.get_graph(seq);
                 let r_values = utils::set_r_values(
                     &graph_struct.nwp,
                     &graph_struct.pred_hash,
@@ -106,12 +106,15 @@ fn main() {
                         &hofp_reverse,
                     );
                     if rev_alignment.0 > alignment.0 {
-                        utils::write_gaf(&rev_alignment.1.unwrap().to_string(), i + 1);
+                        let gaf = graph_optimizer.remap_gaf(seq, rev_alignment.1.unwrap());
+                        utils::write_gaf(&gaf.to_string(), i + 1);
                     } else {
-                        utils::write_gaf(&alignment.1.unwrap().to_string(), i + 1);
+                        let gaf = graph_optimizer.remap_gaf(seq, alignment.1.unwrap());
+                        utils::write_gaf(&gaf.to_string(), i + 1);
                     }
                 } else {
-                    utils::write_gaf(&alignment.1.unwrap().to_string(), i + 1);
+                    let gaf = graph_optimizer.remap_gaf(seq, alignment.1.unwrap());
+                    utils::write_gaf(&gaf.to_string(), i + 1);
                 }
             }
         }
@@ -170,12 +173,15 @@ fn main() {
                         )
                     };
                     if alignment.0 < alignment_rev.0 {
-                        utils::write_gaf(&alignment.1.unwrap().to_string(), i + 1);
+                        let gaf = graph_optimizer.remap_gaf(seq, alignment.1.unwrap());
+                        utils::write_gaf(&gaf.to_string(), i + 1);
                     } else {
-                        utils::write_gaf(&alignment_rev.1.unwrap().to_string(), i + 1);
+                        let gaf = graph_optimizer.remap_gaf(seq, alignment_rev.1.unwrap());
+                        utils::write_gaf(&gaf.to_string(), i + 1);
                     }
                 } else {
-                    utils::write_gaf(&alignment.1.unwrap().to_string(), i + 1)
+                    let gaf = graph_optimizer.remap_gaf(seq, alignment.1.unwrap());
+                    utils::write_gaf(&gaf.to_string(), i + 1);
                 }
             }
         }
@@ -184,7 +190,7 @@ fn main() {
             let (g_open, g_ext) = args_parser::get_gap_open_gap_ext();
 
             for (i, seq) in sequences.iter().enumerate() {
-                let graph_struct = graph_optmizer.get_graph(seq);
+                let graph_struct = graph_optimizer.get_graph(seq);
                 let bases_to_add = (b + f * seq.len() as f32) as usize;
                 let alignment = gap_global_abpoa::exec(
                     seq,
@@ -216,12 +222,15 @@ fn main() {
                         &hofp_reverse,
                     );
                     if rev_alignment.0 > alignment.0 {
-                        utils::write_gaf(&rev_alignment.1.unwrap().to_string(), i + 1);
+                        let gaf = graph_optimizer.remap_gaf(seq, rev_alignment.1.unwrap());
+                        utils::write_gaf(&gaf.to_string(), i + 1);
                     } else {
-                        utils::write_gaf(&alignment.1.unwrap().to_string(), i + 1);
+                        let gaf = graph_optimizer.remap_gaf(seq, alignment.1.unwrap());
+                        utils::write_gaf(&gaf.to_string(), i + 1);
                     }
                 } else {
-                    utils::write_gaf(&alignment.1.unwrap().to_string(), i + 1);
+                    let gaf = graph_optimizer.remap_gaf(seq, alignment.1.unwrap());
+                    utils::write_gaf(&gaf.to_string(), i + 1);
                 }
             }
         }
@@ -229,7 +238,7 @@ fn main() {
         3 => {
             let (g_open, g_ext) = args_parser::get_gap_open_gap_ext();
             for (i, seq) in sequences.iter().enumerate() {
-                let graph_struct = graph_optmizer.get_graph(seq);
+                let graph_struct = graph_optimizer.get_graph(seq);
                 let alignment = gap_local_poa::exec(
                     seq,
                     (&seq_names[i], i + 1),
@@ -257,12 +266,15 @@ fn main() {
                         &hofp_reverse,
                     );
                     if rev_alignment.0 > alignment.0 {
-                        utils::write_gaf(&rev_alignment.1.unwrap().to_string(), i + 1);
+                        let gaf = graph_optimizer.remap_gaf(seq, rev_alignment.1.unwrap());
+                        utils::write_gaf(&gaf.to_string(), i + 1);
                     } else {
-                        utils::write_gaf(&alignment.1.unwrap().to_string(), i + 1);
+                        let gaf = graph_optimizer.remap_gaf(seq, alignment.1.unwrap());
+                        utils::write_gaf(&gaf.to_string(), i + 1);
                     }
                 } else {
-                    utils::write_gaf(&alignment.1.unwrap().to_string(), i + 1);
+                    let gaf = graph_optimizer.remap_gaf(seq, alignment.1.unwrap());
+                    utils::write_gaf(&gaf.to_string(), i + 1);
                 }
             }
         }
