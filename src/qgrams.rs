@@ -1,4 +1,4 @@
-use crate::{gaf_output::GAFStruct, graph::LnzGraph};
+use crate::graph::LnzGraph;
 use bit_vec::BitVec;
 use std::{
     cell::RefCell,
@@ -112,15 +112,16 @@ impl<'a> DistanceMap<'a> {
 struct GraphOptimizer<'a> {
     graph: &'a LnzGraph,
     q: usize,
-    cache: HashMap<String, (Bound, InverseMap)>,
+    cache: HashMap<String, (Bound, HandlePos)>,
     distance: DistanceMap<'a>,
     graph_qgrams: GraphIndex,
+    handle_pos: &'a HandlePos,
 }
 
-type InverseMap = Vec<usize>;
+type HandlePos = HashMap<usize, String>;
 
 impl<'a> GraphOptimizer<'a> {
-    fn new(graph: &'a LnzGraph, q: usize) -> Self {
+    fn new(graph: &'a LnzGraph, handle_pos: &'a HandlePos, q: usize) -> Self {
         let distance = DistanceMap::new(graph);
         let qgrams = graph.find_all_qgrams(q);
         assert!(qgrams.iter().all(|qgram| qgram.1.len() == q));
@@ -138,10 +139,11 @@ impl<'a> GraphOptimizer<'a> {
             cache: Default::default(),
             distance,
             graph_qgrams,
+            handle_pos,
         }
     }
 
-    fn cut_graph(&mut self, bound: &Bound, read_len: usize) -> (LnzGraph, InverseMap) {
+    fn cut_graph(&mut self, bound: &Bound, read_len: usize) -> (LnzGraph, HandlePos) {
         let node_before = bound.read_offset;
 
         let starts: Vec<_> = (0..self.graph.len())
@@ -156,7 +158,7 @@ impl<'a> GraphOptimizer<'a> {
         self.cut_graph_exact(&starts, &ends)
     }
 
-    fn cut_graph_exact(&mut self, start: &[usize], end: &[usize]) -> (LnzGraph, InverseMap) {
+    fn cut_graph_exact(&mut self, start: &[usize], end: &[usize]) -> (LnzGraph, HandlePos) {
         let reachable_nodes = (0..self.graph.len())
             .filter(|&node| {
                 end.iter()
@@ -196,13 +198,19 @@ impl<'a> GraphOptimizer<'a> {
             })
             .collect();
 
+        let new_handle_pos: HandlePos = reachable_nodes
+            .iter()
+            .enumerate()
+            .map(|(i, node)| (i, self.handle_pos[node].clone()))
+            .collect();
+
         (
             LnzGraph {
                 lnz,
                 nwp,
                 pred_hash,
             },
-            reachable_nodes,
+            new_handle_pos,
         )
     }
 
@@ -244,64 +252,54 @@ impl<'a> GraphOptimizer<'a> {
     }
 }
 
-pub fn get_optimizer<'a>(graph: &'a LnzGraph, q: usize) -> Box<dyn Optimizer + 'a> {
+pub fn get_optimizer<'a>(
+    graph: &'a LnzGraph,
+    handle_pos: &'a HandlePos,
+    q: usize,
+) -> Box<dyn Optimizer + 'a> {
     if q == 0 {
-        Box::new(PassThrough::new(&graph))
+        Box::new(PassThrough::new(graph, handle_pos))
     } else {
-        Box::new(GraphOptimizer::new(&graph, q))
+        Box::new(GraphOptimizer::new(graph, handle_pos, q))
     }
 }
 
 struct PassThrough<'a> {
     graph: &'a LnzGraph,
+    handle_pos: &'a HandlePos,
 }
 
 impl<'a> PassThrough<'a> {
-    fn new(graph: &'a LnzGraph) -> Self {
-        Self { graph }
+    fn new(graph: &'a LnzGraph, handle_pos: &'a HandlePos) -> Self {
+        Self { graph, handle_pos }
     }
 }
 
 pub trait Optimizer {
-    fn get_graph(&mut self, read: &[char]) -> LnzGraph;
-    fn remap_gaf(&mut self, read: &[char], gaf: GAFStruct) -> GAFStruct;
+    fn optimize_graph(&mut self, read: &[char]) -> (LnzGraph, HandlePos);
 }
 
 impl<'a> Optimizer for PassThrough<'a> {
-    fn get_graph(&mut self, _read: &[char]) -> LnzGraph {
-        self.graph.clone()
-    }
-    fn remap_gaf(&mut self, _read: &[char], gaf: GAFStruct) -> GAFStruct {
-        gaf
+    fn optimize_graph(&mut self, _read: &[char]) -> (LnzGraph, HandlePos) {
+        (self.graph.clone(), self.handle_pos.clone())
     }
 }
 
 impl<'a> Optimizer for GraphOptimizer<'a> {
-    fn get_graph(&mut self, read: &[char]) -> LnzGraph {
+    fn optimize_graph(&mut self, read: &[char]) -> (LnzGraph, HandlePos) {
         let read: String = read.iter().collect();
-        if let Some((bound, _)) = self.cache.get(&read).cloned() {
+        if let Some((bound, handle_pos)) = self.cache.get(&read).cloned() {
             let (graph, _) = self.cut_graph(&bound, read.len());
             println!("graph went from {} to {}", self.graph.len(), graph.len());
-            return graph;
+            return (graph, handle_pos);
         }
         if let Some(bound) = self.find_best_bound(&read) {
-            let (graph, inverse_map) = self.cut_graph(&bound, read.len());
-            self.cache.insert(read, (bound, inverse_map));
+            let (graph, handle_pos) = self.cut_graph(&bound, read.len());
+            self.cache.insert(read, (bound, handle_pos.clone()));
             println!("graph went from {} to {}", self.graph.len(), graph.len());
-            return graph;
+            return (graph, handle_pos);
         }
         println!("graph is the same");
-        self.graph.clone()
-    }
-
-    fn remap_gaf(&mut self, read: &[char], mut gaf: GAFStruct) -> GAFStruct {
-        if let Some((_, inverse_map)) = &self.cache.get(&read.iter().collect::<String>()) {
-            for g in &mut gaf.path {
-                *g = inverse_map[*g];
-            }
-            gaf.path_start = inverse_map[gaf.path_start];
-            gaf.path_end = inverse_map[gaf.path_end];
-        }
-        gaf
+        (self.graph.clone(), self.handle_pos.clone())
     }
 }
