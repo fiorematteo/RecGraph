@@ -1,9 +1,6 @@
 use crate::graph::LnzGraph;
 use bit_vec::BitVec;
-use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet, VecDeque},
-};
+use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
 struct GramPoint {
@@ -70,7 +67,9 @@ impl LnzGraph {
 
 struct DistanceMap<'a> {
     graph: &'a LnzGraph,
-    cached_distance: RefCell<Vec<Vec<Option<usize>>>>,
+    cached_distance: Vec<Vec<Option<usize>>>,
+    visited: BitVec,
+    queue: VecDeque<usize>,
 }
 
 impl<'a> DistanceMap<'a> {
@@ -82,20 +81,23 @@ impl<'a> DistanceMap<'a> {
 
         Self {
             graph,
-            cached_distance: RefCell::new(cached_distance),
+            cached_distance,
+            visited: BitVec::from_elem(graph.len(), false),
+            queue: VecDeque::new(),
         }
     }
 
-    fn get(&self, from: usize, to: usize) -> usize {
-        let mut cache = self.cached_distance.borrow_mut();
+    fn get(&mut self, from: usize, to: usize) -> usize {
+        let cache = &mut self.cached_distance;
         if let Some(distance) = cache[from][to] {
             return distance;
         }
 
-        let mut visited = HashSet::new();
-        let mut queue = VecDeque::new();
-        queue.push_back(to);
-        while let Some(node) = queue.pop_front() {
+        self.visited.clear();
+        self.queue.clear();
+
+        self.queue.push_back(to);
+        while let Some(node) = (&mut self.queue).pop_front() {
             if node == from {
                 return cache[from][to].unwrap();
             }
@@ -103,8 +105,9 @@ impl<'a> DistanceMap<'a> {
                 if cache[pred][to].is_none() {
                     cache[pred][to] = Some(cache[node][to].unwrap() + 1);
                 }
-                if visited.insert(pred) {
-                    queue.push_back(pred);
+                if !self.visited[pred] {
+                    self.visited.set(pred, true);
+                    self.queue.push_back(pred);
                 }
             }
         }
@@ -116,7 +119,6 @@ impl<'a> DistanceMap<'a> {
 struct GraphOptimizer<'a> {
     graph: &'a LnzGraph,
     q: usize,
-    cache: HashMap<String, (Bound, HandlePos, HandlePos)>,
     distance: DistanceMap<'a>,
     graph_qgrams: GraphIndex,
     handle_pos: &'a HandlePos,
@@ -146,7 +148,6 @@ impl<'a> GraphOptimizer<'a> {
         Self {
             graph,
             q,
-            cache: Default::default(),
             distance,
             graph_qgrams,
             handle_pos,
@@ -174,17 +175,16 @@ impl<'a> GraphOptimizer<'a> {
         start: &[usize],
         end: &[usize],
     ) -> (LnzGraph, HandlePos, HandlePos) {
-        let mut reachable_nodes = (0..self.graph.len())
+        let mut reachable_nodes: Vec<_> = (0..self.graph.len())
             .filter(|&node| {
                 start
                     .iter()
                     .any(|&start| self.distance.get(start, node) != usize::MAX)
+                    && end
+                        .iter()
+                        .any(|&end| self.distance.get(node, end) != usize::MAX)
             })
-            .filter(|&node| {
-                end.iter()
-                    .any(|&end| self.distance.get(node, end) != usize::MAX)
-            })
-            .collect::<Vec<_>>();
+            .collect();
 
         if reachable_nodes[0] != 0 {
             reachable_nodes.insert(0, 0);
@@ -227,6 +227,13 @@ impl<'a> GraphOptimizer<'a> {
 
         let last_preds = pred_hash.entry(reachable_nodes.len() - 1).or_insert(vec![]);
         last_preds.append(&mut last_nodes);
+
+        for i in 0..lnz.len() {
+            if nwp[i] && pred_hash[&i].is_empty() {
+                pred_hash.remove(&i);
+                nwp.set(i, false);
+            }
+        }
 
         let new_handle_pos = reachable_nodes
             .iter()
@@ -282,8 +289,8 @@ impl<'a> GraphOptimizer<'a> {
 
         possible_bounds
             .into_iter()
-            //.min_by_key(|Bound { distance, .. }| distance.abs_diff(read.len())) // exact?
-            .max_by_key(|Bound { distance, .. }| *distance) // conservative
+            //.max_by_key(|Bound { distance, .. }| *distance) // conservative
+            .min_by_key(|Bound { distance, .. }| distance.abs_diff(read.len())) // exact?
     }
 }
 
