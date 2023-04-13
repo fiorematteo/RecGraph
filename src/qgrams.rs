@@ -2,62 +2,74 @@ use crate::graph::LnzGraph;
 use bit_vec::BitVec;
 use std::collections::{HashMap, VecDeque};
 
-#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 struct GramPoint {
-    start: usize,
-    end: usize,
+    points: Vec<usize>,
 }
+
+impl GramPoint {
+    fn new(points: Vec<usize>) -> Self {
+        Self { points }
+    }
+
+    fn start(&self) -> usize {
+        self.points[0]
+    }
+
+    fn end(&self) -> usize {
+        self.points[self.points.len() - 1]
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Bound {
     start: GramPoint,
     end: GramPoint,
     distance: usize,
-    read_offset: usize,
+    begin_offset: usize,
+    end_offset: usize,
 }
 type GraphIndex = HashMap<String, Vec<GramPoint>>;
 
 impl LnzGraph {
-    fn find_all_qgrams(&self, q: usize) -> Vec<(GramPoint, VecDeque<char>)> {
-        let mut qgrams: Vec<(GramPoint, VecDeque<char>)> = Vec::new();
-        for node in 0..self.len() - 1 {
-            let mut new_qgrams = self.find_all_qgram_from_node(node, q);
-            qgrams.append(&mut new_qgrams);
-        }
-        qgrams
+    fn find_all_qgrams(&self, q: usize) -> Vec<GramPoint> {
+        (0..self.len() - 1)
+            .flat_map(|node| self.find_all_qgram_from_node(node, q))
+            .collect()
     }
 
-    fn find_all_qgram_from_node(&self, node: usize, q: usize) -> Vec<(GramPoint, VecDeque<char>)> {
-        let mut qgrams: Vec<(GramPoint, VecDeque<char>)> = Vec::new();
-        if q == 1 {
-            qgrams.push((
-                GramPoint {
-                    start: node,
-                    end: node,
-                },
-                VecDeque::new(),
-            ));
-        } else {
-            for pred in self.get_predecessors(node) {
-                let mut inner_qgrams = self.find_all_qgram_from_node(pred, q - 1);
-                qgrams.append(&mut inner_qgrams);
+    fn find_all_qgram_from_node(&self, node: usize, q: usize) -> Vec<GramPoint> {
+        let mut result = Vec::new();
+        let mut queue: VecDeque<VecDeque<usize>> = VecDeque::new();
+        queue.push_back(vec![node].into());
+        while let Some(point) = queue.pop_front() {
+            if point.len() == q {
+                result.push(point);
+            } else {
+                self.with_predecessors(point[0], |pred| {
+                    let mut new_point = point.clone();
+                    new_point.push_front(pred);
+                    queue.push_back(new_point);
+                });
             }
         }
-        for qgram in &mut qgrams {
-            qgram.0.end = node;
-            qgram.1.push_front(self.lnz[node]);
-        }
-        qgrams
+        result
+            .into_iter()
+            .map(|x| GramPoint::new(x.into()))
+            .collect()
     }
 
-    fn get_predecessors(&self, node: usize) -> Vec<usize> {
-        if node == 0 {
-            return vec![];
-        }
+    fn with_predecessors(&self, node: usize, mut callback: impl FnMut(usize)) {
         if self.nwp[node] {
-            self.pred_hash.get(&node).unwrap().to_vec()
-        } else {
-            vec![node - 1]
+            for pred in self.pred_hash.get(&node).unwrap() {
+                callback(*pred);
+            }
+            return;
         }
+        if node == 0 {
+            return;
+        }
+        callback(node - 1);
     }
 
     fn len(&self) -> usize {
@@ -97,11 +109,11 @@ impl<'a> DistanceMap<'a> {
         self.queue.clear();
 
         self.queue.push_back(to);
-        while let Some(node) = (&mut self.queue).pop_front() {
+        while let Some(node) = self.queue.pop_front() {
             if node == from {
                 return cache[from][to].unwrap();
             }
-            for pred in self.graph.get_predecessors(node) {
+            self.graph.with_predecessors(node, |pred| {
                 if cache[pred][to].is_none() {
                     cache[pred][to] = Some(cache[node][to].unwrap() + 1);
                 }
@@ -109,7 +121,7 @@ impl<'a> DistanceMap<'a> {
                     self.visited.set(pred, true);
                     self.queue.push_back(pred);
                 }
-            }
+            });
         }
         cache[from][to] = Some(usize::MAX);
         usize::MAX
@@ -136,15 +148,16 @@ impl<'a> GraphOptimizer<'a> {
     ) -> Self {
         let distance = DistanceMap::new(graph);
         let qgrams = graph.find_all_qgrams(q);
-        assert!(qgrams.iter().all(|qgram| qgram.1.len() == q));
+        assert!(qgrams.iter().all(|qgram| qgram.points.len() == q));
         let mut graph_qgrams: GraphIndex = Default::default();
-        for (position, key) in qgrams {
-            let key: Vec<_> = key.into();
+        for position in &qgrams {
+            let key: String = position.points.iter().map(|&p| graph.lnz[p]).collect();
             graph_qgrams
-                .entry(key.iter().collect())
-                .and_modify(|x| x.push(position))
-                .or_insert(vec![position]);
+                .entry(key)
+                .and_modify(|x| x.push(position.clone()))
+                .or_insert_with(|| vec![position.clone()]);
         }
+        graph_qgrams.retain(|_, v| v.len() == 1); // avoid duplicates
         Self {
             graph,
             q,
@@ -156,35 +169,33 @@ impl<'a> GraphOptimizer<'a> {
     }
 
     fn cut_graph(&mut self, bound: &Bound, read_len: usize) -> (LnzGraph, HandlePos, HandlePos) {
-        let node_before = bound.read_offset;
-
-        let starts: Vec<_> = (0..self.graph.len())
-            .filter(|&node| self.distance.get(node, bound.start.start) <= node_before)
-            .collect();
-
-        let node_after = read_len - bound.read_offset + self.q;
-        let ends: Vec<_> = (0..self.graph.len())
-            .filter(|&node| self.distance.get(bound.end.end, node) <= node_after)
-            .collect();
-
-        self.cut_graph_exact(&starts, &ends)
-    }
-
-    fn cut_graph_exact(
-        &mut self,
-        start: &[usize],
-        end: &[usize],
-    ) -> (LnzGraph, HandlePos, HandlePos) {
         let mut reachable_nodes: Vec<_> = (0..self.graph.len())
             .filter(|&node| {
-                start
-                    .iter()
-                    .any(|&start| self.distance.get(start, node) != usize::MAX)
-                    && end
-                        .iter()
-                        .any(|&end| self.distance.get(node, end) != usize::MAX)
+                self.distance.get(bound.start.end(), node) != usize::MAX
+                    && self.distance.get(node, bound.end.start()) != usize::MAX
             })
             .collect();
+
+        let distance_before = bound
+            .begin_offset
+            .min(self.distance.get(0, bound.start.start()));
+
+        let distance_after = (read_len - bound.end_offset - self.q)
+            .min(self.distance.get(bound.end.end(), self.graph.len() - 1));
+
+        let mut edges: Vec<_> = (0..self.graph.len())
+            .filter(|&node| {
+                self.distance.get(bound.end.end(), node) <= distance_after
+                    || self.distance.get(node, bound.start.start()) <= distance_before
+            })
+            .collect();
+
+        reachable_nodes.append(&mut edges);
+        reachable_nodes.append(&mut bound.start.points.clone());
+        reachable_nodes.append(&mut bound.end.points.clone());
+
+        reachable_nodes.sort_unstable();
+        reachable_nodes.dedup();
 
         if reachable_nodes[0] != 0 {
             reachable_nodes.insert(0, 0);
@@ -225,7 +236,7 @@ impl<'a> GraphOptimizer<'a> {
             .map(|(i, _)| i)
             .collect();
 
-        let last_preds = pred_hash.entry(reachable_nodes.len() - 1).or_insert(vec![]);
+        let last_preds = pred_hash.entry(reachable_nodes.len() - 1).or_default();
         last_preds.append(&mut last_nodes);
 
         for i in 0..lnz.len() {
@@ -259,7 +270,7 @@ impl<'a> GraphOptimizer<'a> {
     }
 
     fn find_best_bound(&mut self, read: &str) -> Option<Bound> {
-        let read_grams: Vec<_> = (0..read.len() - self.q + 1)
+        let read_grams: Vec<_> = (0..=read.len() - self.q)
             .map(|i| &read[i..i + self.q])
             .collect();
         let mut possible_bounds = Vec::new();
@@ -267,19 +278,20 @@ impl<'a> GraphOptimizer<'a> {
             if !self.graph_qgrams.contains_key(begin_gram) {
                 continue;
             }
-            for end_gram in (i + 1..=read_grams.len() - 1).map(|j| read_grams[j]) {
+            for (j, end_gram) in (i + 1..read_grams.len()).map(|j| (j, read_grams[j])).rev() {
                 if !self.graph_qgrams.contains_key(end_gram) {
                     continue;
                 }
-                for &begin_id in &self.graph_qgrams[begin_gram] {
-                    for &end_id in &self.graph_qgrams[end_gram] {
-                        let distance = self.distance.get(begin_id.end, end_id.start);
+                for begin_id in &self.graph_qgrams[begin_gram] {
+                    for end_id in &self.graph_qgrams[end_gram] {
+                        let distance = self.distance.get(begin_id.end(), end_id.start());
                         if distance != usize::MAX {
                             possible_bounds.push(Bound {
-                                start: begin_id,
-                                end: end_id,
+                                start: begin_id.clone(),
+                                end: end_id.clone(),
                                 distance,
-                                read_offset: i,
+                                begin_offset: i,
+                                end_offset: j,
                             });
                         }
                     }
@@ -290,7 +302,7 @@ impl<'a> GraphOptimizer<'a> {
         possible_bounds
             .into_iter()
             //.max_by_key(|Bound { distance, .. }| *distance) // conservative
-            .min_by_key(|Bound { distance, .. }| distance.abs_diff(read.len())) // exact?
+            .min_by_key(|Bound { distance, .. }| distance.abs_diff(read.len())) // exact
     }
 }
 
@@ -349,18 +361,9 @@ impl<'a> Optimizer for PassThrough<'a> {
 impl<'a> Optimizer for GraphOptimizer<'a> {
     fn optimize_graph(&mut self, read: &[char]) -> (LnzGraph, HandlePos, HandlePos) {
         let read: String = read.iter().collect();
-        if let Some((bound, handle_pos, reverse_handle_pos)) = self.cache.get(&read).cloned() {
-            let (graph, _, _) = self.cut_graph(&bound, read.len());
-            println!("graph went from {} to {}", self.graph.len(), graph.len());
-            return (graph, handle_pos, reverse_handle_pos);
-        }
         if let Some(bound) = self.find_best_bound(&read) {
             let (graph, handle_pos, reverse_handle_pos) = self.cut_graph(&bound, read.len());
-            self.cache.insert(
-                read,
-                (bound, handle_pos.clone(), reverse_handle_pos.clone()),
-            );
-            println!("graph went from {} to {}", self.graph.len(), graph.len());
+            println!("graph reduced from {} to {}", self.graph.len(), graph.len());
             return (graph, handle_pos, reverse_handle_pos);
         }
         println!("graph is the same");
