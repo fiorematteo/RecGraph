@@ -1,6 +1,6 @@
 use crate::graph::LnzGraph;
 use bit_vec::BitVec;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 struct GramPoint {
@@ -25,7 +25,6 @@ impl GramPoint {
 struct Bound {
     start: GramPoint,
     end: GramPoint,
-    distance: usize,
     begin_offset: usize,
     end_offset: usize,
 }
@@ -131,10 +130,11 @@ impl<'a> DistanceMap<'a> {
 struct GraphOptimizer<'a> {
     graph: &'a LnzGraph,
     q: usize,
-    distance: DistanceMap<'a>,
+    // distance: DistanceMap<'a>,
     graph_qgrams: GraphIndex,
     handle_pos: &'a HandlePos,
     reverse_handle_pos: &'a HandlePos,
+    successors: HashMap<usize, Vec<usize>>,
 }
 
 type HandlePos = HashMap<usize, String>;
@@ -146,7 +146,7 @@ impl<'a> GraphOptimizer<'a> {
         reverse_handle_pos: &'a HandlePos,
         q: usize,
     ) -> Self {
-        let distance = DistanceMap::new(graph);
+        // let distance = DistanceMap::new(graph);
         let qgrams = graph.find_all_qgrams(q);
         assert!(qgrams.iter().all(|qgram| qgram.points.len() == q));
         let mut graph_qgrams: GraphIndex = Default::default();
@@ -158,41 +158,97 @@ impl<'a> GraphOptimizer<'a> {
                 .or_insert_with(|| vec![position.clone()]);
         }
         graph_qgrams.retain(|_, v| v.len() == 1); // avoid duplicates
+        let mut successors = HashMap::new();
+        for node in 0..graph.len() {
+            graph.with_predecessors(node, |pred| {
+                successors.entry(pred).or_insert_with(Vec::new).push(node);
+            });
+        }
+        successors.insert(graph.len() - 1, vec![]);
+
         Self {
             graph,
             q,
-            distance,
+            // distance,
             graph_qgrams,
             handle_pos,
             reverse_handle_pos,
+            successors,
+        }
+    }
+
+    fn predecessors_bfs(
+        &self,
+        start: usize,
+        check_fun: impl Fn(usize, usize) -> bool,
+    ) -> HashSet<usize> {
+        let mut visited = HashSet::new();
+        let mut queue: VecDeque<(usize, usize)> = vec![(start, 0)].into();
+        while let Some((node, depth)) = queue.pop_front() {
+            if check_fun(node, depth) {
+                break;
+            }
+            self.graph.with_predecessors(node, |pred| {
+                if !visited.contains(&pred) {
+                    queue.push_back((pred, depth + 1));
+                    visited.insert(pred);
+                }
+            })
+        }
+        queue.into_iter().for_each(|(node, _)| {
+            visited.insert(node);
+        });
+        visited
+    }
+
+    fn successors_bfs(
+        &self,
+        start: usize,
+        check_fun: impl Fn(usize, usize) -> bool,
+    ) -> HashSet<usize> {
+        let mut visited = HashSet::new();
+        let mut queue: VecDeque<(usize, usize)> = vec![(start, 0)].into();
+        while let Some((node, depth)) = queue.pop_front() {
+            if check_fun(node, depth) {
+                break;
+            }
+            self.with_successors(node, |next| {
+                if !visited.contains(&next) {
+                    queue.push_back((next, depth + 1));
+                    visited.insert(next);
+                }
+            })
+        }
+        queue.into_iter().for_each(|(node, _)| {
+            visited.insert(node);
+        });
+        visited
+    }
+
+    fn with_successors(&self, node: usize, mut callback: impl FnMut(usize)) {
+        for &succ in &self.successors[&node] {
+            callback(succ);
         }
     }
 
     fn cut_graph(&mut self, bound: &Bound, read_len: usize) -> (LnzGraph, HandlePos, HandlePos) {
-        let mut reachable_nodes: Vec<_> = (0..self.graph.len())
-            .filter(|&node| {
-                self.distance.get(bound.start.end(), node) != usize::MAX
-                    && self.distance.get(node, bound.end.start()) != usize::MAX
-            })
+        let before_nodes =
+            self.predecessors_bfs(bound.start.start(), |_, d| d == bound.begin_offset);
+        let after_nodes = self.successors_bfs(bound.end.end(), |_, d| {
+            d == read_len - bound.end_offset - self.q
+        });
+
+        let direct_bfs = self.predecessors_bfs(bound.end.start(), |_, _| false);
+        let reverse_bfs = self.successors_bfs(bound.start.end(), |_, _| false);
+
+        let mut reachable_nodes: Vec<_> = direct_bfs
+            .intersection(&reverse_bfs)
+            .cloned()
+            .chain(before_nodes.into_iter())
+            .chain(after_nodes.into_iter())
+            .chain(bound.start.points.clone().into_iter())
+            .chain(bound.end.points.clone().into_iter())
             .collect();
-
-        let distance_before = bound
-            .begin_offset
-            .min(self.distance.get(0, bound.start.start()));
-
-        let distance_after = (read_len - bound.end_offset - self.q)
-            .min(self.distance.get(bound.end.end(), self.graph.len() - 1));
-
-        let mut edges: Vec<_> = (0..self.graph.len())
-            .filter(|&node| {
-                self.distance.get(bound.end.end(), node) <= distance_after
-                    || self.distance.get(node, bound.start.start()) <= distance_before
-            })
-            .collect();
-
-        reachable_nodes.append(&mut edges);
-        reachable_nodes.append(&mut bound.start.points.clone());
-        reachable_nodes.append(&mut bound.end.points.clone());
 
         reachable_nodes.sort_unstable();
         reachable_nodes.dedup();
@@ -270,39 +326,52 @@ impl<'a> GraphOptimizer<'a> {
     }
 
     fn find_best_bound(&mut self, read: &str) -> Option<Bound> {
-        let read_grams: Vec<_> = (0..=read.len() - self.q)
-            .map(|i| &read[i..i + self.q])
+        let mut read_grams: Vec<(usize, &str)> = (0..=read.len() - self.q)
+            .map(|i| (i, &read[i..i + self.q]))
             .collect();
-        let mut possible_bounds = Vec::new();
-        for (i, &begin_gram) in read_grams.iter().enumerate() {
+
+        // remove duplicates qgrams from read
+        let mut duplicates = HashSet::new();
+        read_grams = read_grams
+            .drain(..)
+            .filter(|&(_, v)| duplicates.insert(v))
+            .collect();
+
+        self.find_first_valid_gram(&read_grams)
+    }
+
+    fn find_first_valid_gram(&self, read_grams: &[(usize, &str)]) -> Option<Bound> {
+        // maximising distance inside read
+        for &(i, begin_gram) in read_grams.iter() {
             if !self.graph_qgrams.contains_key(begin_gram) {
                 continue;
             }
-            for (j, end_gram) in (i + 1..read_grams.len()).map(|j| (j, read_grams[j])).rev() {
+            for (j, end_gram) in (i + 1..read_grams.len()).map(|j| read_grams[j]).rev() {
                 if !self.graph_qgrams.contains_key(end_gram) {
                     continue;
                 }
                 for begin_id in &self.graph_qgrams[begin_gram] {
                     for end_id in &self.graph_qgrams[end_gram] {
-                        let distance = self.distance.get(begin_id.end(), end_id.start());
-                        if distance != usize::MAX {
-                            possible_bounds.push(Bound {
-                                start: begin_id.clone(),
-                                end: end_id.clone(),
-                                distance,
-                                begin_offset: i,
-                                end_offset: j,
-                            });
+                        if begin_id.end() > end_id.start() {
+                            // order is wrong
+                            continue;
                         }
+                        // possible invalid pair (parallel qgrams)
+                        // if self.distance.get(begin_id.end(), end_id.start()) == usize::MAX {
+                        //     println!("error avoided!");
+                        //     continue;
+                        // }
+                        return Some(Bound {
+                            start: begin_id.clone(),
+                            end: end_id.clone(),
+                            begin_offset: i,
+                            end_offset: j,
+                        });
                     }
                 }
             }
         }
-
-        possible_bounds
-            .into_iter()
-            //.max_by_key(|Bound { distance, .. }| *distance) // conservative
-            .min_by_key(|Bound { distance, .. }| distance.abs_diff(read.len())) // exact
+        None
     }
 }
 
