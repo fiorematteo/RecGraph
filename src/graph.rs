@@ -131,6 +131,10 @@ pub fn get_sorted_handles(file_path: &str, amb_mode: bool) -> Vec<Handle> {
     let gfa: GFA<usize, ()> = parser.parse_file(file_path).unwrap();
 
     let graph: HashGraph = HashGraph::from_gfa(&gfa);
+    get_sorted_handles_from_hashgraph(&graph, amb_mode)
+}
+
+pub fn get_sorted_handles_from_hashgraph(graph: &HashGraph, amb_mode: bool) -> Vec<Handle> {
     let mut sorted_handles: Vec<Handle> = graph.handles_iter().collect();
     sorted_handles.sort();
     if amb_mode {
@@ -142,6 +146,7 @@ pub fn get_sorted_handles(file_path: &str, amb_mode: bool) -> Vec<Handle> {
     }
     sorted_handles
 }
+
 /// DEMO, used by pathwise_alignment   
 /// Returns, for each node, the paths the node belong to.
 pub fn create_nodes_paths(file_path: &str) -> Vec<Vec<usize>> {

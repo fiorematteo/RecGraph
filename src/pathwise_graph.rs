@@ -7,6 +7,7 @@ use handlegraph::{
 };
 use std::collections::HashMap;
 //TODO: check path versus, only working with every path on + or -
+#[derive(Clone)]
 pub struct PathGraph {
     pub lnz: Vec<char>,
     pub nwp: BitVec,
@@ -71,7 +72,7 @@ impl PathGraph {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PredHash {
     predecessor: HashMap<usize, HashMap<usize, BitVec>>,
 }
