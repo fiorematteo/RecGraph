@@ -57,7 +57,7 @@ impl GraphOptimizer {
         let parser = GFAParser::new();
         let gfa: GFA<usize, ()> = parser.parse_file(graph_path).unwrap();
         let graph: HashGraph = HashGraph::from_gfa(&gfa);
-        let qgrams: Vec<GramPoint> = find_all_qgrams(&graph, q);
+        let qgrams: Vec<GramPoint> = graph.find_all_qgrams(q);
         let mut graph_qgrams: GraphIndex = Default::default();
         for position in &qgrams {
             graph_qgrams
@@ -75,15 +75,15 @@ impl GraphOptimizer {
     }
 
     fn cut_graph(&mut self, bound: &Bound, read_len: usize) -> HashGraph {
-        let before_nodes = predecessors_bfs(&self.graph, bound.start.start(), |_, d| {
-            d == bound.begin_offset
-        });
-        let after_nodes = successors_bfs(&self.graph, bound.end.end(), |_, d| {
+        let before_nodes = self
+            .graph
+            .predecessors_bfs(bound.start.start(), |_, d| d == bound.begin_offset);
+        let after_nodes = self.graph.successors_bfs(bound.end.end(), |_, d| {
             d == read_len - bound.end_offset - self.q
         });
 
-        let direct_bfs = predecessors_bfs(&self.graph, bound.end.start(), |_, _| false);
-        let reverse_bfs = successors_bfs(&self.graph, bound.start.end(), |_, _| false);
+        let direct_bfs = self.graph.predecessors_bfs(bound.end.start(), |_, _| false);
+        let reverse_bfs = self.graph.successors_bfs(bound.start.end(), |_, _| false);
 
         let reachable_points: HashSet<_> = direct_bfs
             .intersection(&reverse_bfs)
@@ -134,8 +134,8 @@ impl GraphOptimizer {
             max_id: *reachable_nodes.iter().max().unwrap(),
             min_id: *reachable_nodes.iter().min().unwrap(),
             graph,
+            path_id: self.graph.path_id.clone(),
             paths,
-            ..clone_hashgraph(&self.graph)
         }
     }
 
@@ -196,134 +196,8 @@ impl GraphOptimizer {
             return graph;
         }
         println!("graph is the same");
-        clone_hashgraph(&self.graph)
+        self.graph.clone()
     }
-}
-
-fn successors_bfs(
-    graph: &HashGraph,
-    start: Point,
-    check_fun: impl Fn(Point, usize) -> bool,
-) -> HashSet<Point> {
-    let mut visited = HashSet::new();
-    let mut queue: VecDeque<(Point, usize)> = vec![(start, 0)].into();
-    while let Some((node, depth)) = queue.pop_front() {
-        if check_fun(node, depth) {
-            break;
-        }
-        with_successors(graph, node, |next| {
-            if !visited.contains(&next) {
-                queue.push_back((next, depth + 1));
-                visited.insert(next);
-            }
-        })
-    }
-    queue.into_iter().for_each(|(node, _)| {
-        visited.insert(node);
-    });
-    visited
-}
-
-fn predecessors_bfs(
-    graph: &HashGraph,
-    start: Point,
-    check_fun: impl Fn(Point, usize) -> bool,
-) -> HashSet<Point> {
-    let mut visited = HashSet::new();
-    let mut queue: VecDeque<(Point, usize)> = vec![(start, 0)].into();
-    while let Some((node, depth)) = queue.pop_front() {
-        if check_fun(node, depth) {
-            break;
-        }
-        with_predecessors(graph, node, |next| {
-            if !visited.contains(&next) {
-                queue.push_back((next, depth + 1));
-                visited.insert(next);
-            }
-        })
-    }
-    queue.into_iter().for_each(|(node, _)| {
-        visited.insert(node);
-    });
-    visited
-}
-
-fn with_successors(graph: &HashGraph, point: Point, mut callback: impl FnMut(Point)) {
-    let node = graph.get_node(&point.node).unwrap();
-    if point.offset == node.sequence.len() - 1 {
-        let handle = Handle::new(point.node, Orientation::Forward);
-        for handle in graph.handle_edges_iter(handle, Direction::Right) {
-            callback(Point {
-                node: handle.id(),
-                offset: 0,
-            });
-        }
-    } else {
-        callback(Point {
-            node: point.node,
-            offset: point.offset + 1,
-        });
-    }
-}
-
-fn with_predecessors(graph: &HashGraph, point: Point, mut callback: impl FnMut(Point)) {
-    let node = graph.get_node(&point.node).unwrap();
-    if point.offset == 0 {
-        let handle = Handle::new(point.node, Orientation::Forward);
-        for handle in graph.handle_edges_iter(handle, Direction::Left) {
-            callback(Point {
-                node: handle.id(),
-                offset: node.sequence.len() - 1,
-            });
-        }
-    } else {
-        callback(Point {
-            node: point.node,
-            offset: point.offset - 1,
-        });
-    }
-}
-
-fn find_all_qgrams(graph: &HashGraph, q: usize) -> Vec<GramPoint> {
-    let qgrams = find_all_qgrams_rec(graph, q);
-    qgrams
-        .into_iter()
-        .map(|points| {
-            let value = String::from_utf8(
-                points
-                    .iter()
-                    .map(|p| graph.get_node(&p.node).unwrap().sequence[p.offset])
-                    .collect::<Vec<_>>(),
-            )
-            .unwrap();
-            GramPoint { value, points }
-        })
-        .collect()
-}
-
-fn find_all_qgrams_rec(graph: &HashGraph, q: usize) -> Vec<Vec<Point>> {
-    let mut cache: HashMap<(Point, usize), Vec<Point>> = HashMap::new();
-    for q in 1..=q {
-        for node in graph.graph.keys() {
-            for offset in 0..graph.get_node(node).unwrap().sequence.len() {
-                let point = Point {
-                    node: *node,
-                    offset,
-                };
-                with_successors(graph, point, |next| {
-                    if q == 1 {
-                        let new_v = vec![next];
-                        cache.insert((next, q), new_v);
-                    } else if let Some(v) = cache.get(&(point, q - 1)) {
-                        let mut new_v = v.clone();
-                        new_v.push(next);
-                        cache.insert((next, q), new_v);
-                    }
-                });
-            }
-        }
-    }
-    cache.values().filter(|v| v.len() == q).cloned().collect()
 }
 
 pub fn get_optimizer<'a>(graph_path: &str, q: usize) -> Box<dyn Optimizer + 'a> {
@@ -399,28 +273,174 @@ impl Optimizer for GraphOptimizer {
     }
 }
 
-fn clone_hashgraph(graph: &HashGraph) -> HashGraph {
-    let paths = graph
-        .paths
-        .iter()
-        .map(|(&k, v)| {
-            (
-                k,
-                Path {
-                    path_id: v.path_id,
-                    name: v.name.clone(),
-                    is_circular: v.is_circular,
-                    nodes: v.nodes.clone(),
-                },
-            )
-        })
-        .collect();
+trait HashGraphExt {
+    fn clone(&self) -> Self;
+    fn successors_bfs(
+        &self,
+        start: Point,
+        check_fun: impl Fn(Point, usize) -> bool,
+    ) -> HashSet<Point>;
+    fn predecessors_bfs(
+        &self,
+        start: Point,
+        check_fun: impl Fn(Point, usize) -> bool,
+    ) -> HashSet<Point>;
+    fn with_successors(&self, point: Point, callback: impl FnMut(Point));
+    fn with_predecessors(&self, point: Point, callback: impl FnMut(Point));
+    fn find_all_qgrams(&self, q: usize) -> Vec<GramPoint>;
+    fn find_all_qgrams_rec(&self, q: usize) -> Vec<Vec<Point>>;
+}
 
-    HashGraph {
-        graph: graph.graph.clone(),
-        path_id: graph.path_id.clone(),
-        paths,
-        max_id: graph.max_id,
-        min_id: graph.min_id,
+impl HashGraphExt for HashGraph {
+    fn successors_bfs(
+        &self,
+        start: Point,
+        check_fun: impl Fn(Point, usize) -> bool,
+    ) -> HashSet<Point> {
+        let mut visited = HashSet::new();
+        let mut queue: VecDeque<(Point, usize)> = vec![(start, 0)].into();
+        while let Some((node, depth)) = queue.pop_front() {
+            if check_fun(node, depth) {
+                break;
+            }
+            self.with_successors(node, |next| {
+                if !visited.contains(&next) {
+                    queue.push_back((next, depth + 1));
+                    visited.insert(next);
+                }
+            })
+        }
+        queue.into_iter().for_each(|(node, _)| {
+            visited.insert(node);
+        });
+        visited
+    }
+
+    fn predecessors_bfs(
+        &self,
+        start: Point,
+        check_fun: impl Fn(Point, usize) -> bool,
+    ) -> HashSet<Point> {
+        let mut visited = HashSet::new();
+        let mut queue: VecDeque<(Point, usize)> = vec![(start, 0)].into();
+        while let Some((node, depth)) = queue.pop_front() {
+            if check_fun(node, depth) {
+                break;
+            }
+            self.with_predecessors(node, |next| {
+                if !visited.contains(&next) {
+                    queue.push_back((next, depth + 1));
+                    visited.insert(next);
+                }
+            })
+        }
+        queue.into_iter().for_each(|(node, _)| {
+            visited.insert(node);
+        });
+        visited
+    }
+
+    fn with_successors(&self, point: Point, mut callback: impl FnMut(Point)) {
+        let node = self.get_node(&point.node).unwrap();
+        if point.offset == node.sequence.len() - 1 {
+            let handle = Handle::new(point.node, Orientation::Forward);
+            for handle in self.handle_edges_iter(handle, Direction::Right) {
+                callback(Point {
+                    node: handle.id(),
+                    offset: 0,
+                });
+            }
+        } else {
+            callback(Point {
+                node: point.node,
+                offset: point.offset + 1,
+            });
+        }
+    }
+
+    fn with_predecessors(&self, point: Point, mut callback: impl FnMut(Point)) {
+        let node = self.get_node(&point.node).unwrap();
+        if point.offset == 0 {
+            let handle = Handle::new(point.node, Orientation::Forward);
+            for handle in self.handle_edges_iter(handle, Direction::Left) {
+                callback(Point {
+                    node: handle.id(),
+                    offset: node.sequence.len() - 1,
+                });
+            }
+        } else {
+            callback(Point {
+                node: point.node,
+                offset: point.offset - 1,
+            });
+        }
+    }
+
+    fn find_all_qgrams(&self, q: usize) -> Vec<GramPoint> {
+        let qgrams = self.find_all_qgrams_rec(q);
+        qgrams
+            .into_iter()
+            .map(|points| {
+                let value = String::from_utf8(
+                    points
+                        .iter()
+                        .map(|p| self.get_node(&p.node).unwrap().sequence[p.offset])
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap();
+                GramPoint { value, points }
+            })
+            .collect()
+    }
+
+    fn find_all_qgrams_rec(&self, q: usize) -> Vec<Vec<Point>> {
+        let mut cache: HashMap<(Point, usize), Vec<Point>> = HashMap::new();
+        for q in 1..=q {
+            for node in self.graph.keys() {
+                for offset in 0..self.get_node(node).unwrap().sequence.len() {
+                    let point = Point {
+                        node: *node,
+                        offset,
+                    };
+                    self.with_successors(point, |next| {
+                        if q == 1 {
+                            let new_v = vec![next];
+                            cache.insert((next, q), new_v);
+                        } else if let Some(v) = cache.get(&(point, q - 1)) {
+                            let mut new_v = v.clone();
+                            new_v.push(next);
+                            cache.insert((next, q), new_v);
+                        }
+                    });
+                }
+            }
+        }
+        cache.values().filter(|v| v.len() == q).cloned().collect()
+    }
+
+    fn clone(&self) -> HashGraph {
+        let paths = self
+            .paths
+            .iter()
+            .map(|(&k, v)| {
+                (
+                    k,
+                    Path {
+                        path_id: v.path_id,
+                        name: v.name.clone(),
+                        is_circular: v.is_circular,
+                        nodes: v.nodes.clone(),
+                    },
+                )
+            })
+            .collect();
+
+        HashGraph {
+            max_id: self.max_id,
+            min_id: self.min_id,
+            graph: self.graph.clone(),
+            path_id: self.path_id.clone(),
+            paths,
+        }
     }
 }
