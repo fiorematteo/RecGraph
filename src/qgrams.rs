@@ -1,3 +1,8 @@
+use crate::{
+    graph::{create_graph_struct, LnzGraph},
+    pathwise_graph::{create_path_graph, PathGraph},
+    utils::create_handle_pos_in_lnz_from_hashgraph,
+};
 use gfa::{
     gfa::{Orientation, GFA},
     parser::GFAParser,
@@ -8,12 +13,6 @@ use handlegraph::{
     hashgraph::{HashGraph, Path},
 };
 use std::collections::{HashMap, HashSet, VecDeque};
-
-use crate::{
-    graph::{create_graph_struct, LnzGraph},
-    pathwise_graph::{create_path_graph, PathGraph},
-    utils::create_handle_pos_in_lnz_from_hashgraph,
-};
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 struct GramPoint {
@@ -31,10 +30,20 @@ impl GramPoint {
     }
 }
 
-#[derive(Debug, Clone, Eq, Hash, PartialEq, PartialOrd, Ord, Copy)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq, Copy)]
 struct Point {
     pub node: NodeId,
     pub offset: usize,
+}
+
+impl PartialOrd for Point {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        if self.node == other.node {
+            self.offset.partial_cmp(&other.offset)
+        } else {
+            self.node.partial_cmp(&other.node)
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -213,6 +222,7 @@ struct PassThrough {
     hofp_forward: HandleMap,
     hofp_reverse: HandleMap,
     variation_graph: PathGraph,
+    inverse_variation_graph: PathGraph,
 }
 
 impl PassThrough {
@@ -226,11 +236,13 @@ impl PassThrough {
         let hofp_reverse =
             create_handle_pos_in_lnz_from_hashgraph(&sequence_graph.nwp, &hashgraph, true);
         let variation_graph = create_path_graph(&hashgraph, false);
+        let inverse_variation_graph = create_path_graph(&hashgraph, true);
         Self {
             sequence_graph,
             hofp_forward,
             hofp_reverse,
             variation_graph,
+            inverse_variation_graph,
         }
     }
 }
@@ -251,8 +263,11 @@ impl Optimizer for PassThrough {
     }
 
     fn generate_variation_graph(&mut self, _read: &[char], is_reversed: bool) -> PathGraph {
-        assert!(!is_reversed);
-        self.variation_graph.clone()
+        if is_reversed {
+            self.inverse_variation_graph.clone()
+        } else {
+            self.variation_graph.clone()
+        }
     }
 }
 

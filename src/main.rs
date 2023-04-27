@@ -340,12 +340,12 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .expect(&format!("failed to execute with mode: {mode}"))
+            .unwrap()
     }
 
     #[test]
     fn full_integration() {
-        Command::new("cargo").args(&["build", "--release"]);
+        Command::new("cargo").args(&["build", "--release"]).output().unwrap();
         let childs = (0..=9)
             .map(|mode| {
                 launch_command_with_mode(mode)
