@@ -319,7 +319,7 @@ fn main() {
     match now.elapsed() {
         Ok(elapsed) => {
             // it prints '2'
-            eprintln!("Done in {}.", elapsed.as_secs());
+            eprintln!("Done in {:.2?}.", elapsed);
         }
         Err(e) => {
             // an error occurred!
