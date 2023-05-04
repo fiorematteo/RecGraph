@@ -12,6 +12,7 @@ use handlegraph::{
     handlegraph::HandleGraph,
     hashgraph::{HashGraph, Path},
 };
+use log::{error, info, warn};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -71,10 +72,11 @@ impl GraphOptimizer {
         for position in &qgrams {
             graph_qgrams
                 .entry(position.value.clone())
-                .and_modify(|x| x.push(position.clone()))
-                .or_insert_with(|| vec![position.clone()]);
+                .or_insert_with(Vec::new)
+                .push(position.clone());
         }
-        graph_qgrams.retain(|_, v| v.len() == 1); // avoid duplicates
+        graph_qgrams.retain(|_, v| v.len() == 1); // remove duplicates
+        info!("Found {} unique qgrams", graph_qgrams.len());
 
         Self {
             graph,
@@ -83,7 +85,7 @@ impl GraphOptimizer {
         }
     }
 
-    fn cut_graph(&mut self, bound: &Bound, read_len: usize) -> HashGraph {
+    fn cut_graph(&mut self, bound: &Bound, read_len: usize) -> Option<HashGraph> {
         let before_nodes = self
             .graph
             .predecessors_bfs(bound.start.start(), |_, d| d == bound.begin_offset);
@@ -91,11 +93,21 @@ impl GraphOptimizer {
             d == read_len - bound.end_offset - self.q
         });
 
-        let direct_bfs = self.graph.predecessors_bfs(bound.end.start(), |_, _| false);
-        let reverse_bfs = self.graph.successors_bfs(bound.start.end(), |_, _| false);
+        let direct_bfs = self
+            .graph
+            .predecessors_bfs(bound.end.start(), |_, depth| depth == read_len);
+        let reverse_bfs = self
+            .graph
+            .successors_bfs(bound.start.end(), |_, depth| depth == read_len);
+
+        let intersection: HashSet<_> = direct_bfs.intersection(&reverse_bfs).collect();
+        if intersection.is_empty() {
+            error!("No intersection found between direct and reverse bfs");
+            return None;
+        }
 
         let reachable_points: HashSet<_> = direct_bfs
-            .intersection(&reverse_bfs)
+            .union(&reverse_bfs)
             .cloned()
             .chain(before_nodes.into_iter())
             .chain(after_nodes.into_iter())
@@ -139,13 +151,13 @@ impl GraphOptimizer {
             })
             .collect();
 
-        HashGraph {
+        Some(HashGraph {
             max_id: *reachable_nodes.iter().max().unwrap(),
             min_id: *reachable_nodes.iter().min().unwrap(),
             graph,
             path_id: self.graph.path_id.clone(),
             paths,
-        }
+        })
     }
 
     fn find_best_bound(&mut self, read: &str) -> Option<Bound> {
@@ -160,6 +172,12 @@ impl GraphOptimizer {
             .filter(|&(_, v)| duplicates.insert(v))
             .collect();
 
+        info!(
+            "Found {} unique qgrams in {} long read",
+            read_grams.len(),
+            read.len()
+        );
+
         self.find_first_valid_gram(&read_grams)
     }
 
@@ -169,10 +187,12 @@ impl GraphOptimizer {
             if !self.graph_qgrams.contains_key(begin_gram) {
                 continue;
             }
+            info!("Found first gram {}", begin_gram);
             for (j, end_gram) in (i + 1..read_grams.len()).map(|j| read_grams[j]).rev() {
                 if !self.graph_qgrams.contains_key(end_gram) {
                     continue;
                 }
+                info!("Found last gram {}", end_gram);
                 for begin_id in &self.graph_qgrams[begin_gram] {
                     for end_id in &self.graph_qgrams[end_gram] {
                         if begin_id.end() > end_id.start() {
@@ -196,15 +216,18 @@ impl GraphOptimizer {
     fn optimize_graph(&mut self, read: &[char]) -> HashGraph {
         let read: String = read.iter().collect();
         if let Some(bound) = self.find_best_bound(&read) {
-            let graph = self.cut_graph(&bound, read.len());
-            // println!(
-            //     "graph reduced from {} to {}",
-            //     self.graph.node_count(),
-            //     graph.node_count()
-            // );
-            return graph;
+            if let Some(graph) = self.cut_graph(&bound, read.len()) {
+                info!(
+                    "Graph reduced from {} to {}",
+                    self.graph.node_count(),
+                    graph.node_count()
+                );
+                info!("Bound start offset {}", bound.begin_offset);
+                info!("Bound end offset {}", bound.end_offset);
+                return graph;
+            }
         }
-        println!("graph is the same");
+        warn!("No valid bound found, falling back to whole graph");
         self.graph.clone()
     }
 }
@@ -288,8 +311,7 @@ impl Optimizer for GraphOptimizer {
     }
 }
 
-trait HashGraphExt {
-    fn clone(&self) -> Self;
+trait HashGraphExt<'a> {
     fn successors_bfs(
         &self,
         start: Point,
@@ -300,13 +322,13 @@ trait HashGraphExt {
         start: Point,
         check_fun: impl Fn(Point, usize) -> bool,
     ) -> HashSet<Point>;
-    fn with_successors(&self, point: Point, callback: impl FnMut(Point));
-    fn with_predecessors(&self, point: Point, callback: impl FnMut(Point));
     fn find_all_qgrams(&self, q: usize) -> Vec<GramPoint>;
-    fn find_all_qgrams_rec(&self, q: usize) -> Vec<Vec<Point>>;
+    fn iter_successors(&'a self, point: Point) -> Box<dyn Iterator<Item = Point> + 'a>;
+    fn iter_predecessors(&'a self, point: Point) -> Box<dyn Iterator<Item = Point> + 'a>;
+    fn clone(&self) -> Self;
 }
 
-impl HashGraphExt for HashGraph {
+impl HashGraphExt<'_> for HashGraph {
     fn successors_bfs(
         &self,
         start: Point,
@@ -318,12 +340,12 @@ impl HashGraphExt for HashGraph {
             if check_fun(node, depth) {
                 break;
             }
-            self.with_successors(node, |next| {
+            for next in self.iter_successors(node) {
                 if !visited.contains(&next) {
                     queue.push_back((next, depth + 1));
                     visited.insert(next);
                 }
-            })
+            }
         }
         queue.into_iter().for_each(|(node, _)| {
             visited.insert(node);
@@ -342,59 +364,53 @@ impl HashGraphExt for HashGraph {
             if check_fun(node, depth) {
                 break;
             }
-            self.with_predecessors(node, |next| {
+            for next in self.iter_successors(node) {
                 if !visited.contains(&next) {
                     queue.push_back((next, depth + 1));
                     visited.insert(next);
                 }
-            })
+            }
         }
         queue.into_iter().for_each(|(node, _)| {
             visited.insert(node);
         });
         visited
-    }
-
-    fn with_successors(&self, point: Point, mut callback: impl FnMut(Point)) {
-        let node = self.get_node(&point.node).unwrap();
-        if point.offset == node.sequence.len() - 1 {
-            let handle = Handle::new(point.node, Orientation::Forward);
-            for handle in self.handle_edges_iter(handle, Direction::Right) {
-                callback(Point {
-                    node: handle.id(),
-                    offset: 0,
-                });
-            }
-        } else {
-            callback(Point {
-                node: point.node,
-                offset: point.offset + 1,
-            });
-        }
-    }
-
-    fn with_predecessors(&self, point: Point, mut callback: impl FnMut(Point)) {
-        let node = self.get_node(&point.node).unwrap();
-        if point.offset == 0 {
-            let handle = Handle::new(point.node, Orientation::Forward);
-            for handle in self.handle_edges_iter(handle, Direction::Left) {
-                callback(Point {
-                    node: handle.id(),
-                    offset: node.sequence.len() - 1,
-                });
-            }
-        } else {
-            callback(Point {
-                node: point.node,
-                offset: point.offset - 1,
-            });
-        }
     }
 
     fn find_all_qgrams(&self, q: usize) -> Vec<GramPoint> {
-        let qgrams = self.find_all_qgrams_rec(q);
-        qgrams
-            .into_iter()
+        let mut cache: HashMap<(Point, usize), Vec<Vec<Point>>> = HashMap::new();
+        for current_q in 1..=q {
+            for node in self.graph.keys() {
+                for offset in 0..self.get_node(node).unwrap().sequence.len() {
+                    let point = Point {
+                        node: *node,
+                        offset,
+                    };
+                    for next in self.iter_successors(point) {
+                        if current_q == 1 {
+                            // base case
+                            let new_v = vec![vec![next]];
+                            cache.insert((next, current_q), new_v);
+                        } else if let Some(v) = cache.get(&(point, current_q - 1)) {
+                            // recursive case
+                            for mut new_v in v.clone() {
+                                new_v.push(next);
+                                cache
+                                    .entry((next, current_q))
+                                    .or_insert_with(Vec::new)
+                                    .push(new_v);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut qgrams: Vec<GramPoint> = cache
+            .values()
+            .flatten()
+            .filter(|v| v.len() == q)
+            .cloned()
             .map(|points| {
                 let value = String::from_utf8(
                     points
@@ -405,32 +421,58 @@ impl HashGraphExt for HashGraph {
                 .unwrap();
                 GramPoint { value, points }
             })
-            .collect()
+            .collect();
+        info!("Found {} non-unique qgrams", qgrams.len());
+
+        qgrams.sort_by_key(|GramPoint { value, .. }| value.clone());
+
+        qgrams
     }
 
-    fn find_all_qgrams_rec(&self, q: usize) -> Vec<Vec<Point>> {
-        let mut cache: HashMap<(Point, usize), Vec<Point>> = HashMap::new();
-        for q in 1..=q {
-            for node in self.graph.keys() {
-                for offset in 0..self.get_node(node).unwrap().sequence.len() {
-                    let point = Point {
-                        node: *node,
-                        offset,
-                    };
-                    self.with_successors(point, |next| {
-                        if q == 1 {
-                            let new_v = vec![next];
-                            cache.insert((next, q), new_v);
-                        } else if let Some(v) = cache.get(&(point, q - 1)) {
-                            let mut new_v = v.clone();
-                            new_v.push(next);
-                            cache.insert((next, q), new_v);
-                        }
-                    });
-                }
-            }
+    fn iter_successors<'a>(&'a self, point: Point) -> Box<dyn Iterator<Item = Point> + 'a> {
+        let node = self.get_node(&point.node).unwrap();
+        if point.offset == node.sequence.len() - 1 {
+            let handle = Handle::new(point.node, Orientation::Forward);
+            return Box::new(
+                self.handle_edges_iter(handle, Direction::Right)
+                    .map(|handle| Point {
+                        node: handle.id(),
+                        offset: 0,
+                    }),
+            );
+        } else {
+            Box::new(
+                [Point {
+                    node: point.node,
+                    offset: point.offset + 1,
+                }]
+                .into_iter(),
+            )
         }
-        cache.values().filter(|v| v.len() == q).cloned().collect()
+    }
+
+    fn iter_predecessors<'a>(&'a self, point: Point) -> Box<dyn Iterator<Item = Point> + 'a> {
+        if point.offset == 0 {
+            let handle = Handle::new(point.node, Orientation::Forward);
+            return Box::new(
+                self.handle_edges_iter(handle, Direction::Left)
+                    .map(|handle| {
+                        let node = self.get_node(&handle.id()).unwrap();
+                        Point {
+                            node: handle.id(),
+                            offset: node.sequence.len() - 1,
+                        }
+                    }),
+            );
+        } else {
+            Box::new(
+                [(Point {
+                    node: point.node,
+                    offset: point.offset - 1,
+                })]
+                .into_iter(),
+            )
+        }
     }
 
     fn clone(&self) -> HashGraph {

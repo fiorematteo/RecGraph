@@ -25,6 +25,11 @@ use tikv_jemallocator::Jemalloc;
 static GLOBAL: Jemalloc = Jemalloc;
 
 fn main() {
+    env_logger::builder()
+        .format_target(false)
+        .format_module_path(true)
+        .init();
+
     let now = SystemTime::now();
 
     //get q lenght
@@ -345,11 +350,12 @@ mod tests {
 
     #[test]
     fn full_integration() {
-        Command::new("cargo").args(&["build", "--release"]).output().unwrap();
+        Command::new("cargo")
+            .args(&["build", "--release"])
+            .output()
+            .unwrap();
         let childs = (0..=9)
-            .map(|mode| {
-                launch_command_with_mode(mode)
-            })
+            .map(|mode| launch_command_with_mode(mode))
             .collect::<Vec<_>>();
         childs.into_iter().for_each(|mut child| {
             assert!(child.wait().map_or(false, |r| r.success()));
