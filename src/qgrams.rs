@@ -165,11 +165,12 @@ impl GraphOptimizer {
             (0..=read.len() - q).map(|i| (i, &read[i..i + q])).collect();
 
         // remove duplicates qgrams from read
-        let mut duplicates = HashSet::new();
-        read_grams = read_grams
-            .drain(..)
-            .filter(|&(_, v)| duplicates.insert(v))
-            .collect();
+        let mut counter = HashMap::new();
+        for (_, gram) in &read_grams {
+            *counter.entry(gram.clone()).or_insert(0) += 1;
+        }
+        read_grams.retain(|(_, v)| counter[v] == 1);
+
 
         info!(
             "Found {} unique qgrams in {} long read",
