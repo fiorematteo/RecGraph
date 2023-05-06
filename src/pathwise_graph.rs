@@ -221,16 +221,16 @@ pub fn create_path_graph(graph: &HashGraph, is_reversed: bool) -> PathGraph {
                     path_id,
                     paths_number,
                 );
+            }
 
-                // se ultimo nodo path aggiorna anche F
-                if pos == path_nodes.iter().len() - 1 {
-                    pred_hash_struct.set_preds_and_paths(
-                        linearization.len() - 1,
-                        handle_end,
-                        path_id,
-                        paths_number,
-                    );
-                }
+            // se ultimo nodo path aggiorna anche F
+            if pos == path_nodes.iter().len() - 1 {
+                pred_hash_struct.set_preds_and_paths(
+                    linearization.len() - 1,
+                    handle_end,
+                    path_id,
+                    paths_number,
+                );
             }
         }
     }
