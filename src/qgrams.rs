@@ -58,16 +58,16 @@ type GraphIndex = HashMap<String, Vec<GramPoint>>;
 
 struct GraphOptimizer {
     graph: HashGraph,
-    q: usize,
+    max_q: usize,
     graph_qgrams: GraphIndex,
 }
 
 impl GraphOptimizer {
-    fn new(graph_path: &str, q: usize) -> Self {
+    fn new(graph_path: &str, max_q: usize) -> Self {
         let parser = GFAParser::new();
         let gfa: GFA<usize, ()> = parser.parse_file(graph_path).unwrap();
         let graph: HashGraph = HashGraph::from_gfa(&gfa);
-        let qgrams: Vec<GramPoint> = graph.find_all_qgrams(q);
+        let qgrams: Vec<GramPoint> = graph.find_all_qgrams(max_q);
         let mut graph_qgrams: GraphIndex = Default::default();
         for position in &qgrams {
             graph_qgrams
@@ -80,18 +80,18 @@ impl GraphOptimizer {
 
         Self {
             graph,
-            q,
+            max_q,
             graph_qgrams,
         }
     }
 
-    fn cut_graph(&mut self, bound: &Bound, read_len: usize) -> Option<HashGraph> {
+    fn cut_graph(&mut self, bound: &Bound, read_len: usize, q: usize) -> Option<HashGraph> {
         let before_nodes = self
             .graph
             .predecessors_bfs(bound.start.start(), |_, d| d == bound.begin_offset);
-        let after_nodes = self.graph.successors_bfs(bound.end.end(), |_, d| {
-            d == read_len - bound.end_offset - self.q
-        });
+        let after_nodes = self
+            .graph
+            .successors_bfs(bound.end.end(), |_, d| d == read_len - bound.end_offset - q);
 
         let direct_bfs = self
             .graph
@@ -160,10 +160,9 @@ impl GraphOptimizer {
         })
     }
 
-    fn find_best_bound(&mut self, read: &str) -> Option<Bound> {
-        let mut read_grams: Vec<(usize, &str)> = (0..=read.len() - self.q)
-            .map(|i| (i, &read[i..i + self.q]))
-            .collect();
+    fn find_best_bound(&mut self, read: &str, q: usize) -> Option<Bound> {
+        let mut read_grams: Vec<(usize, &str)> =
+            (0..=read.len() - q).map(|i| (i, &read[i..i + q])).collect();
 
         // remove duplicates qgrams from read
         let mut duplicates = HashSet::new();
@@ -187,16 +186,15 @@ impl GraphOptimizer {
             if !self.graph_qgrams.contains_key(begin_gram) {
                 continue;
             }
-            info!("Found first gram {}", begin_gram);
             for (j, end_gram) in (i + 1..read_grams.len()).map(|j| read_grams[j]).rev() {
                 if !self.graph_qgrams.contains_key(end_gram) {
                     continue;
                 }
-                info!("Found last gram {}", end_gram);
                 for begin_id in &self.graph_qgrams[begin_gram] {
                     for end_id in &self.graph_qgrams[end_gram] {
                         if begin_id.end() > end_id.start() {
                             // order is wrong
+                            warn!("invalid order");
                             continue;
                         }
                         // possible invalid pair (parallel qgrams)
@@ -215,16 +213,24 @@ impl GraphOptimizer {
 
     fn optimize_graph(&mut self, read: &[char]) -> HashGraph {
         let read: String = read.iter().collect();
-        if let Some(bound) = self.find_best_bound(&read) {
-            if let Some(graph) = self.cut_graph(&bound, read.len()) {
-                info!(
-                    "Graph reduced from {} to {}",
-                    self.graph.node_count(),
-                    graph.node_count()
-                );
-                info!("Bound start offset {}", bound.begin_offset);
-                info!("Bound end offset {}", bound.end_offset);
-                return graph;
+        let mut q = self.max_q;
+        loop {
+            if let Some(bound) = self.find_best_bound(&read, q) {
+                if let Some(graph) = self.cut_graph(&bound, read.len(), q) {
+                    info!(
+                        "Graph reduced from {} to {}",
+                        self.graph.node_count(),
+                        graph.node_count()
+                    );
+                    info!("Bound start offset {}", bound.begin_offset);
+                    info!("Bound end offset {}", bound.end_offset);
+                    return graph;
+                }
+            }
+            warn!("No valid bound found for q={}", q);
+            q -= 1;
+            if q == 1 {
+                break;
             }
         }
         warn!("No valid bound found, falling back to whole graph");
@@ -406,10 +412,10 @@ impl HashGraphExt<'_> for HashGraph {
             }
         }
 
-        let mut qgrams: Vec<GramPoint> = cache
+        let qgrams: Vec<GramPoint> = cache
             .values()
             .flatten()
-            .filter(|v| v.len() == q)
+            //.filter(|v| v.len() == q)
             .cloned()
             .map(|points| {
                 let value = String::from_utf8(
@@ -423,8 +429,6 @@ impl HashGraphExt<'_> for HashGraph {
             })
             .collect();
         info!("Found {} non-unique qgrams", qgrams.len());
-
-        qgrams.sort_by_key(|GramPoint { value, .. }| value.clone());
 
         qgrams
     }
