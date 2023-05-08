@@ -13,7 +13,11 @@ use handlegraph::{
     hashgraph::{HashGraph, Path},
 };
 use log::{error, info, warn};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    fs::File,
+    io::{stderr, Write},
+};
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 struct GramPoint {
@@ -56,14 +60,15 @@ struct Bound {
 }
 type GraphIndex = HashMap<String, Vec<GramPoint>>;
 
-struct GraphOptimizer {
+struct GraphOptimizer<F: Write> {
     graph: HashGraph,
     max_q: usize,
     graph_qgrams: GraphIndex,
+    logger: StatsLogger<F>,
 }
 
-impl GraphOptimizer {
-    fn new(graph_path: &str, max_q: usize) -> Self {
+impl<F: Write> GraphOptimizer<F> {
+    fn new(graph_path: &str, max_q: usize, stats_out_file: F) -> Self {
         let parser = GFAParser::new();
         let gfa: GFA<usize, ()> = parser.parse_file(graph_path).unwrap();
         let graph: HashGraph = HashGraph::from_gfa(&gfa);
@@ -78,10 +83,13 @@ impl GraphOptimizer {
         graph_qgrams.retain(|_, v| v.len() == 1); // remove duplicates
         info!("Found {} unique qgrams", graph_qgrams.len());
 
+        let logger = StatsLogger::new(stats_out_file, max_q, graph.node_count());
+
         Self {
             graph,
             max_q,
             graph_qgrams,
+            logger,
         }
     }
 
@@ -167,17 +175,16 @@ impl GraphOptimizer {
         // remove duplicates qgrams from read
         let mut counter = HashMap::new();
         for (_, gram) in &read_grams {
-            *counter.entry(gram.clone()).or_insert(0) += 1;
+            *counter.entry(*gram).or_insert(0) += 1;
         }
         read_grams.retain(|(_, v)| counter[v] == 1);
-
 
         info!(
             "Found {} unique qgrams in {} long read",
             read_grams.len(),
             read.len()
         );
-
+        self.logger.current_read.unique_qgrams = Some(read_grams.len());
         self.find_first_valid_gram(&read_grams)
     }
 
@@ -213,6 +220,7 @@ impl GraphOptimizer {
     }
 
     fn optimize_graph(&mut self, read: &[char]) -> HashGraph {
+        self.logger.current_read.clear();
         let read: String = read.iter().collect();
         let mut q = self.max_q;
         loop {
@@ -225,6 +233,11 @@ impl GraphOptimizer {
                     );
                     info!("Bound start offset {}", bound.begin_offset);
                     info!("Bound end offset {}", bound.end_offset);
+                    self.logger.current_read.start_offset = Some(bound.begin_offset);
+                    self.logger.current_read.end_offset = Some(bound.end_offset);
+                    self.logger.current_read.q = Some(q);
+                    self.logger.current_read.set_from_graph(&graph);
+                    self.logger.log_read();
                     return graph;
                 }
             }
@@ -235,15 +248,23 @@ impl GraphOptimizer {
             }
         }
         warn!("No valid bound found, falling back to whole graph");
+        self.logger.log_failure();
         self.graph.clone()
     }
 }
 
-pub fn get_optimizer<'a>(graph_path: &str, q: usize) -> Box<dyn Optimizer + 'a> {
+pub fn get_optimizer<'a>(
+    graph_path: &str,
+    q: usize,
+    stats_out_file: Option<String>,
+) -> Box<dyn Optimizer + 'a> {
     if q == 0 {
         Box::new(PassThrough::new(graph_path))
+    } else if let Some(file_name) = stats_out_file {
+        let file = File::create(file_name).unwrap();
+        Box::new(GraphOptimizer::new(graph_path, q, file))
     } else {
-        Box::new(GraphOptimizer::new(graph_path, q))
+        Box::new(GraphOptimizer::new(graph_path, q, stderr()))
     }
 }
 
@@ -301,7 +322,7 @@ impl Optimizer for PassThrough {
     }
 }
 
-impl Optimizer for GraphOptimizer {
+impl<F: Write> Optimizer for GraphOptimizer<F> {
     fn generate_sequence_graph(&mut self, read: &[char]) -> (LnzGraph, HandleMap, HandleMap) {
         let hashgraph = self.optimize_graph(read);
         let graph_struct = create_graph_struct(&hashgraph, false);
@@ -504,5 +525,110 @@ impl HashGraphExt<'_> for HashGraph {
             path_id: self.path_id.clone(),
             paths,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StatsRead {
+    pub unique_qgrams: usize,
+    pub start_offset: usize,
+    pub end_offset: usize,
+    pub subgraph_size: usize,
+    pub first_node: NodeId,
+    pub last_node: NodeId,
+    pub q: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct StatsReadBuilder {
+    pub unique_qgrams: Option<usize>,
+    pub start_offset: Option<usize>,
+    pub end_offset: Option<usize>,
+    pub subgraph_size: Option<usize>,
+    pub first_node: Option<NodeId>,
+    pub last_node: Option<NodeId>,
+    pub q: Option<usize>,
+}
+
+impl StatsReadBuilder {
+    fn clear(&mut self) {
+        *self = StatsReadBuilder::default();
+    }
+
+    fn build(&self) -> StatsRead {
+        StatsRead {
+            start_offset: self.start_offset.unwrap(),
+            end_offset: self.end_offset.unwrap(),
+            subgraph_size: self.subgraph_size.unwrap(),
+            first_node: self.first_node.unwrap(),
+            last_node: self.last_node.unwrap(),
+            unique_qgrams: self.unique_qgrams.unwrap(),
+            q: self.q.unwrap(),
+        }
+    }
+
+    fn set_from_graph(&mut self, graph: &HashGraph) {
+        self.subgraph_size = Some(graph.node_count());
+        self.first_node = Some(graph.min_node_id());
+        self.last_node = Some(graph.max_node_id());
+    }
+}
+
+struct StatsLogger<F: Write> {
+    out_file: F,
+    current_read: StatsReadBuilder,
+    reads: Vec<Option<StatsRead>>,
+}
+
+impl<F: Write> StatsLogger<F> {
+    fn new(mut out: F, max_q: usize, full_graph_len: usize) -> Self {
+        write!(out, "{{").unwrap();
+        write!(out, "\"max_q\":{},", max_q).unwrap();
+        write!(out, "\"full_graph_len\":{},", full_graph_len).unwrap();
+        Self {
+            out_file: out,
+            current_read: StatsReadBuilder::default(),
+            reads: Vec::new(),
+        }
+    }
+
+    fn log_read(&mut self) {
+        let read = self.current_read.build();
+        self.reads.push(Some(read));
+    }
+
+    pub fn log_failure(&mut self) {
+        self.reads.push(None);
+    }
+
+    fn write_all(&mut self) -> std::io::Result<()> {
+        let mut buffer = String::new();
+        for read in &self.reads {
+            if let Some(read) = read {
+                buffer += "{";
+                buffer += &format!("\"success\": true,");
+                buffer += &format!("\"start_offset\": {},", read.start_offset);
+                buffer += &format!("\"end_offset\": {},", read.end_offset);
+                buffer += &format!("\"subgraph_size\": {},", read.subgraph_size);
+                buffer += &format!("\"first_node\": {},", read.first_node);
+                buffer += &format!("\"last_node\": {},", read.last_node);
+                buffer += &format!("\"unique_qgrams\": {},", read.unique_qgrams);
+                buffer += &format!("\"q\": {}", read.q);
+                buffer += "},";
+            } else {
+                buffer += &format!("{{\"success\": false}}");
+            }
+        }
+        buffer.pop();
+        writeln!(self.out_file, "\"reads\": [{}]", buffer)?;
+        writeln!(self.out_file, "}}")?;
+        Ok(())
+    }
+}
+
+impl<F: Write> Drop for StatsLogger<F> {
+    fn drop(&mut self) {
+        self.write_all()
+            .expect("Error while writing json stat file")
     }
 }

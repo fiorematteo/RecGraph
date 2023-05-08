@@ -153,6 +153,13 @@ struct Args {
         help = "Length of qgrams, set to 0 to not use qgrams"
     )]
     qgrams_len: usize,
+
+    #[clap(
+        help_heading = "Qgrams optimization",
+        long = "qgrams-out-file",
+        help = "File to output statistics about qgrams performace"
+    )]
+    stats_out_file: Option<String>,
 }
 pub fn get_base_multi_recombination_cost() -> (i32, f32) {
     let args = Args::parse();
@@ -212,4 +219,9 @@ pub fn get_recombination_band_width() -> f32 {
 pub fn get_qgrams_lenght() -> usize {
     let args = Args::parse();
     args.qgrams_len
+}
+
+pub fn get_stats_out_file() -> Option<String> {
+    let args = Args::parse();
+    args.stats_out_file
 }
