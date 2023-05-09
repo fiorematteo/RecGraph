@@ -605,8 +605,7 @@ impl<F: Write> StatsLogger<F> {
         let mut buffer = String::new();
         for read in &self.reads {
             if let Some(read) = read {
-                buffer += "{";
-                buffer += &format!("\"success\": true,");
+                buffer += "{\"success\": true,";
                 buffer += &format!("\"start_offset\": {},", read.start_offset);
                 buffer += &format!("\"end_offset\": {},", read.end_offset);
                 buffer += &format!("\"subgraph_size\": {},", read.subgraph_size);
@@ -616,7 +615,7 @@ impl<F: Write> StatsLogger<F> {
                 buffer += &format!("\"q\": {}", read.q);
                 buffer += "},";
             } else {
-                buffer += &format!("{{\"success\": false}}");
+                buffer += "{\"success\": false}";
             }
         }
         buffer.pop();
