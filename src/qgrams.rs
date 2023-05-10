@@ -108,8 +108,7 @@ impl<F: Write> GraphOptimizer<F> {
             .graph
             .successors_bfs(bound.start.end(), |_, depth| depth == read_len);
 
-        let intersection: HashSet<_> = direct_bfs.intersection(&reverse_bfs).collect();
-        if intersection.is_empty() {
+        if direct_bfs.intersection(&reverse_bfs).next().is_none() {
             error!("No intersection found between direct and reverse bfs");
             return None;
         }
@@ -202,7 +201,6 @@ impl<F: Write> GraphOptimizer<F> {
                     for end_id in &self.graph_qgrams[end_gram] {
                         if begin_id.end() > end_id.start() {
                             // order is wrong
-                            warn!("invalid order");
                             continue;
                         }
                         // possible invalid pair (parallel qgrams)
@@ -222,30 +220,28 @@ impl<F: Write> GraphOptimizer<F> {
     fn optimize_graph(&mut self, read: &[char]) -> HashGraph {
         self.logger.current_read.clear();
         let read: String = read.iter().collect();
-        let mut q = self.max_q;
-        loop {
-            if let Some(bound) = self.find_best_bound(&read, q) {
-                if let Some(graph) = self.cut_graph(&bound, read.len(), q) {
-                    info!(
-                        "Graph reduced from {} to {}",
-                        self.graph.node_count(),
-                        graph.node_count()
-                    );
-                    info!("Bound start offset {}", bound.begin_offset);
-                    info!("Bound end offset {}", bound.end_offset);
-                    self.logger.current_read.start_offset = Some(bound.begin_offset);
-                    self.logger.current_read.end_offset = Some(bound.end_offset);
-                    self.logger.current_read.q = Some(q);
-                    self.logger.current_read.set_from_graph(&graph);
-                    self.logger.log_read();
-                    return graph;
-                }
-            }
-            warn!("No valid bound found for q={}", q);
-            q -= 1;
-            if q == 1 {
-                break;
-            }
+        for q in (2..=self.max_q).rev() {
+            let Some(bound) = self.find_best_bound(&read, q) else {
+                warn!("No valid bound found for q={}", q);
+                continue;
+            };
+            let Some(graph) = self.cut_graph(&bound, read.len(), q) else {
+                warn!("No valid graph for bound found with q={}", q);
+                continue;
+            };
+            info!(
+                "Graph reduced from {} to {}",
+                self.graph.node_count(),
+                graph.node_count()
+            );
+            info!("Bound start offset {}", bound.begin_offset);
+            info!("Bound end offset {}", bound.end_offset);
+            self.logger.current_read.start_offset = Some(bound.begin_offset);
+            self.logger.current_read.end_offset = Some(bound.end_offset);
+            self.logger.current_read.q = Some(q);
+            self.logger.current_read.set_from_graph(&graph);
+            self.logger.log_read();
+            return graph;
         }
         warn!("No valid bound found, falling back to whole graph");
         self.logger.log_failure();
@@ -437,7 +433,6 @@ impl HashGraphExt<'_> for HashGraph {
         let qgrams: Vec<GramPoint> = cache
             .values()
             .flatten()
-            //.filter(|v| v.len() == q)
             .cloned()
             .map(|points| {
                 let value = String::from_utf8(
@@ -615,7 +610,7 @@ impl<F: Write> StatsLogger<F> {
                 buffer += &format!("\"q\": {}", read.q);
                 buffer += "},";
             } else {
-                buffer += "{\"success\": false}";
+                buffer += "{\"success\": false},";
             }
         }
         buffer.pop();
