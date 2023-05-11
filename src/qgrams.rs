@@ -17,6 +17,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::File,
     io::{stderr, Write},
+    time::Instant,
 };
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -219,6 +220,7 @@ impl<F: Write> GraphOptimizer<F> {
 
     fn optimize_graph(&mut self, read: &[char]) -> HashGraph {
         self.logger.current_read.clear();
+        self.logger.current_read.start_time = Some(Instant::now());
         let read: String = read.iter().collect();
         for q in (2..=self.max_q).rev() {
             let Some(bound) = self.find_best_bound(&read, q) else {
@@ -525,24 +527,26 @@ impl HashGraphExt<'_> for HashGraph {
 
 #[derive(Debug, Clone)]
 struct StatsRead {
-    pub unique_qgrams: usize,
-    pub start_offset: usize,
-    pub end_offset: usize,
-    pub subgraph_size: usize,
-    pub first_node: NodeId,
-    pub last_node: NodeId,
-    pub q: usize,
+    unique_qgrams: usize,
+    start_offset: usize,
+    end_offset: usize,
+    subgraph_size: usize,
+    first_node: NodeId,
+    last_node: NodeId,
+    q: usize,
+    start_time: Instant,
 }
 
 #[derive(Debug, Clone, Default)]
 struct StatsReadBuilder {
-    pub unique_qgrams: Option<usize>,
-    pub start_offset: Option<usize>,
-    pub end_offset: Option<usize>,
-    pub subgraph_size: Option<usize>,
-    pub first_node: Option<NodeId>,
-    pub last_node: Option<NodeId>,
-    pub q: Option<usize>,
+    unique_qgrams: Option<usize>,
+    start_offset: Option<usize>,
+    end_offset: Option<usize>,
+    subgraph_size: Option<usize>,
+    first_node: Option<NodeId>,
+    last_node: Option<NodeId>,
+    q: Option<usize>,
+    start_time: Option<Instant>,
 }
 
 impl StatsReadBuilder {
@@ -559,6 +563,7 @@ impl StatsReadBuilder {
             last_node: self.last_node.unwrap(),
             unique_qgrams: self.unique_qgrams.unwrap(),
             q: self.q.unwrap(),
+            start_time: self.start_time.unwrap(),
         }
     }
 
@@ -573,17 +578,20 @@ struct StatsLogger<F: Write> {
     out_file: F,
     current_read: StatsReadBuilder,
     reads: Vec<Option<StatsRead>>,
+    begin_time: Instant,
+    max_q: usize,
+    full_graph_len: usize,
 }
 
 impl<F: Write> StatsLogger<F> {
-    fn new(mut out: F, max_q: usize, full_graph_len: usize) -> Self {
-        write!(out, "{{").unwrap();
-        write!(out, "\"max_q\":{},", max_q).unwrap();
-        write!(out, "\"full_graph_len\":{},", full_graph_len).unwrap();
+    fn new(out: F, max_q: usize, full_graph_len: usize) -> Self {
         Self {
             out_file: out,
             current_read: StatsReadBuilder::default(),
             reads: Vec::new(),
+            begin_time: Instant::now(),
+            max_q,
+            full_graph_len,
         }
     }
 
@@ -598,19 +606,37 @@ impl<F: Write> StatsLogger<F> {
 
     fn write_all(&mut self) -> std::io::Result<()> {
         let mut buffer = String::new();
+        buffer += &format!("{{\"max_q\":{},", self.max_q);
+        buffer += &format!("\"full_graph_len\":{},", self.full_graph_len);
         for read in &self.reads {
-            if let Some(read) = read {
-                buffer += "{\"success\": true,";
-                buffer += &format!("\"start_offset\": {},", read.start_offset);
-                buffer += &format!("\"end_offset\": {},", read.end_offset);
-                buffer += &format!("\"subgraph_size\": {},", read.subgraph_size);
-                buffer += &format!("\"first_node\": {},", read.first_node);
-                buffer += &format!("\"last_node\": {},", read.last_node);
-                buffer += &format!("\"unique_qgrams\": {},", read.unique_qgrams);
-                buffer += &format!("\"q\": {}", read.q);
-                buffer += "},";
-            } else {
-                buffer += "{\"success\": false},";
+            match read {
+                Some(read) => {
+                    buffer += "{\"success\": true,";
+                    buffer += &format!("\"start_offset\": {},", read.start_offset);
+                    buffer += &format!("\"end_offset\": {},", read.end_offset);
+                    buffer += &format!("\"subgraph_size\": {},", read.subgraph_size);
+                    buffer += &format!("\"first_node\": {},", read.first_node);
+                    buffer += &format!("\"last_node\": {},", read.last_node);
+                    buffer += &format!("\"unique_qgrams\": {},", read.unique_qgrams);
+                    buffer += &format!("\"q\": {},", read.q);
+                    buffer += &format!(
+                        "\"start_time\": {}",
+                        read.start_time.duration_since(self.begin_time).as_secs()
+                    );
+                    buffer += "},";
+                }
+                None => {
+                    buffer += "{\"success\": false},";
+                    buffer += &format!(
+                        "\"start_time\": {}",
+                        self.current_read
+                            .start_time
+                            .unwrap()
+                            .duration_since(self.begin_time)
+                            .as_millis()
+                    );
+                    buffer += "},";
+                }
             }
         }
         buffer.pop();

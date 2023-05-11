@@ -149,8 +149,8 @@ struct Args {
         help_heading = "Qgrams optimization",
         default_value_t = 0,
         short = 'q',
-        long = "qgrams-len",
-        help = "Length of qgrams, set to 0 to not use qgrams"
+        long = "max-qgrams-len",
+        help = "Max length of qgrams, set to 0 to not use qgrams"
     )]
     qgrams_len: usize,
 
