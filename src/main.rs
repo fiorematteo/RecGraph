@@ -24,6 +24,8 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
+const QGRAMS_DEBUG_MODE: bool = true;
+
 fn main() {
     env_logger::builder()
         .format_target(false)
@@ -61,6 +63,9 @@ fn main() {
             for (i, seq) in sequences.iter().enumerate() {
                 let (graph_struct, hofp_forward, hofp_reverse) =
                     graph_optimizer.generate_sequence_graph(seq);
+                if !graph_optimizer.last_graph_success() && QGRAMS_DEBUG_MODE {
+                    continue;
+                }
 
                 let r_values = utils::set_r_values(
                     &graph_struct.nwp,
@@ -118,6 +123,9 @@ fn main() {
             for (i, seq) in sequences.iter().enumerate() {
                 let (graph_struct, hofp_forward, hofp_reverse) =
                     graph_optimizer.generate_sequence_graph(seq);
+                if !graph_optimizer.last_graph_success() && QGRAMS_DEBUG_MODE {
+                    continue;
+                }
                 let alignment = if is_x86_feature_detected!("avx2") {
                     unsafe {
                         let temp_score = local_poa::exec_simd(
@@ -181,6 +189,9 @@ fn main() {
             for (i, seq) in sequences.iter().enumerate() {
                 let (graph_struct, hofp_forward, hofp_reverse) =
                     graph_optimizer.generate_sequence_graph(seq);
+                if !graph_optimizer.last_graph_success() && QGRAMS_DEBUG_MODE {
+                    continue;
+                }
                 let bases_to_add = (b + f * seq.len() as f32) as usize;
                 let alignment = gap_global_abpoa::exec(
                     seq,
@@ -223,6 +234,9 @@ fn main() {
             for (i, seq) in sequences.iter().enumerate() {
                 let (graph_struct, hofp_forward, hofp_reverse) =
                     graph_optimizer.generate_sequence_graph(seq);
+                if !graph_optimizer.last_graph_success() && QGRAMS_DEBUG_MODE {
+                    continue;
+                }
                 let alignment = gap_local_poa::exec(
                     seq,
                     (&seq_names[i], i + 1),
@@ -258,6 +272,9 @@ fn main() {
         4 => {
             for (i, seq) in sequences.iter().enumerate() {
                 let graph = graph_optimizer.generate_variation_graph(seq, false);
+                if !graph_optimizer.last_graph_success() && QGRAMS_DEBUG_MODE {
+                    continue;
+                }
                 let mut gaf = pathwise_alignment::exec(seq, &graph, &score_matrix);
                 gaf.query_name = seq_names[i].clone();
                 utils::write_gaf(&gaf.to_string(), i);
@@ -266,6 +283,9 @@ fn main() {
         5 => {
             for (i, seq) in sequences.iter().enumerate() {
                 let graph = graph_optimizer.generate_variation_graph(seq, false);
+                if !graph_optimizer.last_graph_success() && QGRAMS_DEBUG_MODE {
+                    continue;
+                }
                 let mut gaf = pathwise_alignment_semiglobal::exec(seq, &graph, &score_matrix);
                 gaf.query_name = seq_names[i].clone();
                 utils::write_gaf(&gaf.to_string(), i);
@@ -275,6 +295,9 @@ fn main() {
             let (g_open, g_ext) = args_parser::get_gap_open_gap_ext();
             for (i, seq) in sequences.iter().enumerate() {
                 let graph = graph_optimizer.generate_variation_graph(seq, false);
+                if !graph_optimizer.last_graph_success() && QGRAMS_DEBUG_MODE {
+                    continue;
+                }
                 let best_path =
                     pathwise_alignment_gap::exec(seq, &graph, &score_matrix, g_open, g_ext);
                 println!("Best path sequence {i}: {best_path}");
@@ -284,6 +307,9 @@ fn main() {
             let (g_open, g_ext) = args_parser::get_gap_open_gap_ext();
             for (i, seq) in sequences.iter().enumerate() {
                 let graph = graph_optimizer.generate_variation_graph(seq, false);
+                if !graph_optimizer.last_graph_success() && QGRAMS_DEBUG_MODE {
+                    continue;
+                }
                 let best_path =
                     pathwise_alignment_gap_semi::exec(seq, &graph, &score_matrix, g_open, g_ext);
                 println!("Best path sequence {i}: {best_path}");
@@ -294,6 +320,9 @@ fn main() {
             let rbw = args_parser::get_recombination_band_width();
             for (i, seq) in sequences.iter().enumerate() {
                 let graph = graph_optimizer.generate_variation_graph(seq, false);
+                if !graph_optimizer.last_graph_success() && QGRAMS_DEBUG_MODE {
+                    continue;
+                }
                 let rev_graph = pathwise_graph::create_reverse_path_graph(&graph);
                 let displ_matrix = nodes_displacement_matrix(&graph, &rev_graph);
                 let mut gaf = pathwise_alignment_recombination::exec(
