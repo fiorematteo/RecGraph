@@ -222,13 +222,16 @@ impl<F: Write> GraphOptimizer<F> {
         self.logger.current_read.clear();
         self.logger.current_read.start_time = Some(Instant::now());
         let read: String = read.iter().collect();
+        let mut failure = None;
         for q in (2..=self.max_q).rev() {
             let Some(bound) = self.find_best_bound(&read, q) else {
                 warn!("No valid bound found for q={}", q);
+                failure = Some(ReadResult::NoBoundFound(Instant::now()));
                 continue;
             };
             let Some(graph) = self.cut_graph(&bound, read.len(), q) else {
                 warn!("No valid graph for bound found with q={}", q);
+                failure = Some(ReadResult::NoGraphFound(Instant::now()));
                 continue;
             };
             info!(
@@ -246,7 +249,8 @@ impl<F: Write> GraphOptimizer<F> {
             return graph;
         }
         warn!("No valid bound found, falling back to whole graph");
-        self.logger.log_failure();
+        self.logger
+            .log_failure(failure.expect("q must be greater than 2"));
         self.graph.clone()
     }
 }
@@ -577,10 +581,16 @@ impl StatsReadBuilder {
 struct StatsLogger<F: Write> {
     out_file: F,
     current_read: StatsReadBuilder,
-    reads: Vec<Option<StatsRead>>,
+    reads: Vec<ReadResult>,
     begin_time: Instant,
     max_q: usize,
     full_graph_len: usize,
+}
+
+enum ReadResult {
+    Success(StatsRead),
+    NoBoundFound(Instant),
+    NoGraphFound(Instant),
 }
 
 impl<F: Write> StatsLogger<F> {
@@ -597,51 +607,58 @@ impl<F: Write> StatsLogger<F> {
 
     fn log_read(&mut self) {
         let read = self.current_read.build();
-        self.reads.push(Some(read));
+        self.reads.push(ReadResult::Success(read));
     }
 
-    pub fn log_failure(&mut self) {
-        self.reads.push(None);
+    fn log_failure(&mut self, result: ReadResult) {
+        self.reads.push(result);
     }
 
     fn write_all(&mut self) -> std::io::Result<()> {
-        let mut buffer = String::new();
-        buffer += &format!("{{\"max_q\":{},", self.max_q);
-        buffer += &format!("\"full_graph_len\":{},", self.full_graph_len);
-        for read in &self.reads {
-            match read {
-                Some(read) => {
-                    buffer += "{\"success\": true,";
-                    buffer += &format!("\"start_offset\": {},", read.start_offset);
-                    buffer += &format!("\"end_offset\": {},", read.end_offset);
-                    buffer += &format!("\"subgraph_size\": {},", read.subgraph_size);
-                    buffer += &format!("\"first_node\": {},", read.first_node);
-                    buffer += &format!("\"last_node\": {},", read.last_node);
-                    buffer += &format!("\"unique_qgrams\": {},", read.unique_qgrams);
-                    buffer += &format!("\"q\": {},", read.q);
-                    buffer += &format!(
-                        "\"start_time\": {}",
-                        read.start_time.duration_since(self.begin_time).as_secs()
-                    );
-                    buffer += "},";
+        let reads: Vec<_> = self
+            .reads
+            .iter()
+            .map(|read| match read {
+                ReadResult::Success(read) => {
+                    let start_time = read.start_time.duration_since(self.begin_time).as_secs();
+                    let first_node: u64 = read.first_node.into();
+                    let last_node: u64 = read.last_node.into();
+                    json::object! {
+                        success: true,
+                        start_offset: read.start_offset,
+                        end_offset: read.end_offset,
+                        subgraph_size: read.subgraph_size,
+                        first_node: first_node,
+                        last_node: last_node,
+                        unique_qgrams: read.unique_qgrams,
+                        q: read.q,
+                        start_time: start_time
+                    }
                 }
-                None => {
-                    buffer += "{\"success\": false},";
-                    buffer += &format!(
-                        "\"start_time\": {}",
-                        self.current_read
-                            .start_time
-                            .unwrap()
-                            .duration_since(self.begin_time)
-                            .as_millis()
-                    );
-                    buffer += "},";
+                ReadResult::NoBoundFound(time) => {
+                    let start_time = time.duration_since(self.begin_time).as_secs();
+                    json::object! {
+                        success: false,
+                        start_time: start_time,
+                        reason: "no_bound_found"
+                    }
                 }
-            }
-        }
-        buffer.pop();
-        writeln!(self.out_file, "\"reads\": [{}]", buffer)?;
-        writeln!(self.out_file, "}}")?;
+                ReadResult::NoGraphFound(time) => {
+                    let start_time = time.duration_since(self.begin_time).as_secs();
+                    json::object! {
+                        success: false,
+                        start_time: start_time,
+                        reason: "no_graph_found"
+                    }
+                }
+            })
+            .collect();
+        let buffer = json::object! {
+            max_q: self.max_q,
+            full_graph_len: self.full_graph_len,
+            reads: reads
+        };
+        writeln!(self.out_file, "{}", buffer)?;
         Ok(())
     }
 }
