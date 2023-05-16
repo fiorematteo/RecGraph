@@ -221,19 +221,20 @@ impl<F: Write> GraphOptimizer<F> {
     }
 
     fn optimize_graph(&mut self, read: &[char]) -> HashGraph {
+        let start_time = Instant::now();
         self.logger.current_read.clear();
-        self.logger.current_read.start_time = Some(Instant::now());
+        self.logger.current_read.start_time = Some(start_time);
         let read: String = read.iter().collect();
         let mut failure = None;
         for q in (2..=self.max_q).rev() {
             let Some(bound) = self.find_best_bound(&read, q) else {
                 warn!("No valid bound found for q={}", q);
-                failure = Some(ReadResult::NoBoundFound(Instant::now()));
+                failure = Some(ReadResult::NoBoundFound((start_time, Instant::now())));
                 continue;
             };
             let Some(graph) = self.cut_graph(&bound, read.len(), q) else {
                 warn!("No valid graph for bound found with q={}", q);
-                failure = Some(ReadResult::NoGraphFound(Instant::now()));
+                failure = Some(ReadResult::NoGraphFound((start_time, Instant::now())));
                 continue;
             };
             info!(
@@ -552,6 +553,7 @@ struct StatsRead {
     last_node: NodeId,
     q: usize,
     start_time: Instant,
+    end_time: Instant,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -581,6 +583,7 @@ impl StatsReadBuilder {
             unique_qgrams: self.unique_qgrams.unwrap(),
             q: self.q.unwrap(),
             start_time: self.start_time.unwrap(),
+            end_time: Instant::now(),
         }
     }
 
@@ -602,8 +605,8 @@ struct StatsLogger<F: Write> {
 
 enum ReadResult {
     Success(StatsRead),
-    NoBoundFound(Instant),
-    NoGraphFound(Instant),
+    NoBoundFound((Instant, Instant)),
+    NoGraphFound((Instant, Instant)),
 }
 
 impl<F: Write> StatsLogger<F> {
@@ -633,7 +636,9 @@ impl<F: Write> StatsLogger<F> {
             .iter()
             .map(|read| match read {
                 ReadResult::Success(read) => {
-                    let start_time = read.start_time.duration_since(self.begin_time).as_secs();
+                    let start_time =
+                        read.start_time.duration_since(self.begin_time).as_secs_f64();
+                    let end_time = read.end_time.duration_since(self.begin_time).as_secs_f64();
                     let first_node: u64 = read.first_node.into();
                     let last_node: u64 = read.last_node.into();
                     json::object! {
@@ -645,22 +650,27 @@ impl<F: Write> StatsLogger<F> {
                         last_node: last_node,
                         unique_qgrams: read.unique_qgrams,
                         q: read.q,
-                        start_time: start_time
+                        start_time: start_time,
+                        end_time: end_time
                     }
                 }
-                ReadResult::NoBoundFound(time) => {
-                    let start_time = time.duration_since(self.begin_time).as_secs();
+                ReadResult::NoBoundFound((start_time, end_time)) => {
+                    let start_time = start_time.duration_since(self.begin_time).as_secs_f64();
+                    let end_time = end_time.duration_since(self.begin_time).as_secs_f64();
                     json::object! {
                         success: false,
                         start_time: start_time,
+                        end_time: end_time,
                         reason: "no_bound_found"
                     }
                 }
-                ReadResult::NoGraphFound(time) => {
-                    let start_time = time.duration_since(self.begin_time).as_secs();
+                ReadResult::NoGraphFound((start_time, end_time)) => {
+                    let start_time = start_time.duration_since(self.begin_time).as_secs_f64();
+                    let end_time = end_time.duration_since(self.begin_time).as_secs_f64();
                     json::object! {
                         success: false,
                         start_time: start_time,
+                        end_time: end_time,
                         reason: "no_graph_found"
                     }
                 }
