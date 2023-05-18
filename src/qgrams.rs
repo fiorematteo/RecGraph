@@ -12,7 +12,7 @@ use handlegraph::{
     handlegraph::HandleGraph,
     hashgraph::{HashGraph, Path},
 };
-use log::{error, info, warn};
+use log::{info, warn};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::File,
@@ -85,7 +85,7 @@ impl<F: Write> GraphOptimizer<F> {
         graph_qgrams.retain(|_, v| v.len() == 1); // remove duplicates
         info!("Found {} unique qgrams", graph_qgrams.len());
 
-        let logger = StatsLogger::new(stats_out_file, max_q, graph.node_count());
+        let logger = StatsLogger::new(stats_out_file, max_q, &graph);
 
         Self {
             graph,
@@ -112,7 +112,7 @@ impl<F: Write> GraphOptimizer<F> {
             .successors_bfs(bound.start.end(), |_, depth| depth == read_len);
 
         if direct_bfs.intersection(&reverse_bfs).next().is_none() {
-            error!("No intersection found between direct and reverse bfs");
+            warn!("No intersection found between direct and reverse bfs");
             return None;
         }
 
@@ -549,6 +549,7 @@ struct StatsRead {
     start_offset: usize,
     end_offset: usize,
     subgraph_size: usize,
+    total_sequence_size: usize,
     first_node: NodeId,
     last_node: NodeId,
     q: usize,
@@ -562,6 +563,7 @@ struct StatsReadBuilder {
     start_offset: Option<usize>,
     end_offset: Option<usize>,
     subgraph_size: Option<usize>,
+    total_sequence_size: Option<usize>,
     first_node: Option<NodeId>,
     last_node: Option<NodeId>,
     q: Option<usize>,
@@ -578,6 +580,7 @@ impl StatsReadBuilder {
             start_offset: self.start_offset.unwrap(),
             end_offset: self.end_offset.unwrap(),
             subgraph_size: self.subgraph_size.unwrap(),
+            total_sequence_size: self.total_sequence_size.unwrap(),
             first_node: self.first_node.unwrap(),
             last_node: self.last_node.unwrap(),
             unique_qgrams: self.unique_qgrams.unwrap(),
@@ -591,6 +594,12 @@ impl StatsReadBuilder {
         self.subgraph_size = Some(graph.node_count());
         self.first_node = Some(graph.min_node_id());
         self.last_node = Some(graph.max_node_id());
+        self.total_sequence_size = Some(
+            graph
+                .handles_iter()
+                .map(|handle| graph.get_node(&handle.id()).unwrap().sequence.len())
+                .sum(),
+        )
     }
 }
 
@@ -601,6 +610,7 @@ struct StatsLogger<F: Write> {
     begin_time: Instant,
     max_q: usize,
     full_graph_len: usize,
+    total_sequence_size: usize,
 }
 
 enum ReadResult {
@@ -610,14 +620,18 @@ enum ReadResult {
 }
 
 impl<F: Write> StatsLogger<F> {
-    fn new(out: F, max_q: usize, full_graph_len: usize) -> Self {
+    fn new(out: F, max_q: usize, graph: &HashGraph) -> Self {
         Self {
             out_file: out,
             current_read: StatsReadBuilder::default(),
             reads: Vec::new(),
             begin_time: Instant::now(),
             max_q,
-            full_graph_len,
+            full_graph_len: graph.node_count(),
+            total_sequence_size: graph
+                .handles_iter()
+                .map(|handle| graph.get_node(&handle.id()).unwrap().sequence.len())
+                .sum(),
         }
     }
 
@@ -636,8 +650,10 @@ impl<F: Write> StatsLogger<F> {
             .iter()
             .map(|read| match read {
                 ReadResult::Success(read) => {
-                    let start_time =
-                        read.start_time.duration_since(self.begin_time).as_secs_f64();
+                    let start_time = read
+                        .start_time
+                        .duration_since(self.begin_time)
+                        .as_secs_f64();
                     let end_time = read.end_time.duration_since(self.begin_time).as_secs_f64();
                     let first_node: u64 = read.first_node.into();
                     let last_node: u64 = read.last_node.into();
@@ -646,6 +662,7 @@ impl<F: Write> StatsLogger<F> {
                         start_offset: read.start_offset,
                         end_offset: read.end_offset,
                         subgraph_size: read.subgraph_size,
+                        total_sequence_size: read.total_sequence_size,
                         first_node: first_node,
                         last_node: last_node,
                         unique_qgrams: read.unique_qgrams,
@@ -679,6 +696,7 @@ impl<F: Write> StatsLogger<F> {
         let buffer = json::object! {
             max_q: self.max_q,
             full_graph_len: self.full_graph_len,
+            total_sequence_size: self.total_sequence_size,
             reads: reads
         };
         writeln!(self.out_file, "{}", buffer)?;
