@@ -160,6 +160,13 @@ struct Args {
         help = "File to output statistics about qgrams performace"
     )]
     stats_out_file: Option<String>,
+
+    #[clap(
+        help_heading = "Qgrams optimization",
+        long = "qgrams-mask",
+        help = "Mask for sparse qgrams, should be a string of 1 and 0 as long as q"
+    )]
+    qgrams_mask: Option<String>,
 }
 pub fn get_base_multi_recombination_cost() -> (i32, f32) {
     let args = Args::parse();
@@ -224,4 +231,9 @@ pub fn get_qgrams_lenght() -> usize {
 pub fn get_stats_out_file() -> Option<String> {
     let args = Args::parse();
     args.stats_out_file
+}
+
+pub fn get_qgrams_mask() -> Option<String> {
+    let args = Args::parse();
+    args.qgrams_mask
 }

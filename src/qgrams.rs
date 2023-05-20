@@ -63,36 +63,43 @@ type GraphIndex = HashMap<String, Vec<GramPoint>>;
 
 struct GraphOptimizer<F: Write> {
     graph: HashGraph,
-    max_q: usize,
+    q: usize,
     graph_qgrams: GraphIndex,
     logger: StatsLogger<F>,
     last_graph_success: bool,
+    mask: Option<Vec<bool>>,
 }
 
 impl<F: Write> GraphOptimizer<F> {
-    fn new(graph_path: &str, max_q: usize, stats_out_file: F) -> Self {
+    fn new(graph_path: &str, q: usize, mask: Option<String>, stats_out_file: F) -> Self {
         let parser = GFAParser::new();
         let gfa: GFA<usize, ()> = parser.parse_file(graph_path).unwrap();
         let graph: HashGraph = HashGraph::from_gfa(&gfa);
-        let qgrams: Vec<GramPoint> = graph.find_all_qgrams(max_q);
-        let mut graph_qgrams: GraphIndex = Default::default();
-        for position in &qgrams {
-            graph_qgrams
-                .entry(position.value.clone())
-                .or_insert_with(Vec::new)
-                .push(position.clone());
-        }
+        let qgrams: Vec<GramPoint> = graph.find_all_qgrams(q);
+
+        let mask: Option<Vec<bool>> = mask.map(|mask| {
+            assert_eq!(mask.len(), q, "Mask should be as long as q");
+            mask.chars()
+                .map(|c| match c {
+                    '1' => true,
+                    '0' => false,
+                    _ => panic!("Mask should only contain 1 or 0"),
+                })
+                .collect()
+        });
+
+        let mut graph_qgrams: GraphIndex = apply_mask(qgrams, &mask);
         graph_qgrams.retain(|_, v| v.len() == 1); // remove duplicates
+
         info!("Found {} unique qgrams", graph_qgrams.len());
-
-        let logger = StatsLogger::new(stats_out_file, max_q, &graph);
-
+        let logger = StatsLogger::new(stats_out_file, q, &graph);
         Self {
             graph,
-            max_q,
+            q,
             graph_qgrams,
             logger,
             last_graph_success: true,
+            mask,
         }
     }
 
@@ -171,15 +178,28 @@ impl<F: Write> GraphOptimizer<F> {
     }
 
     fn find_best_bound(&mut self, read: &str, q: usize) -> Option<Bound> {
-        let mut read_grams: Vec<(usize, &str)> =
-            (0..=read.len() - q).map(|i| (i, &read[i..i + q])).collect();
+        let mut read_grams: Vec<(usize, String)> = (0..=read.len() - q)
+            .map(|i| (i, &read[i..i + q]))
+            .map(|(i, read)| (i, read.to_string()))
+            .collect();
+
+        if let Some(mask) = &self.mask {
+            for (_, qgram) in read_grams.iter_mut() {
+                *qgram = qgram
+                    .chars()
+                    .enumerate()
+                    .filter(|(i, _)| mask[*i])
+                    .map(|(_, c)| c)
+                    .collect();
+            }
+        }
 
         // remove duplicates qgrams from read
         let mut counter = HashMap::new();
         for (_, gram) in &read_grams {
-            *counter.entry(*gram).or_insert(0) += 1;
+            *counter.entry(gram.clone()).or_insert(0) += 1;
         }
-        read_grams.retain(|(_, v)| counter[v] == 1);
+        read_grams.retain(|(_, v)| counter[v.as_str()] == 1);
 
         info!(
             "Found {} unique qgrams in {} long read",
@@ -190,18 +210,18 @@ impl<F: Write> GraphOptimizer<F> {
         self.find_first_valid_gram(&read_grams)
     }
 
-    fn find_first_valid_gram(&self, read_grams: &[(usize, &str)]) -> Option<Bound> {
+    fn find_first_valid_gram(&self, read_grams: &[(usize, String)]) -> Option<Bound> {
         // maximising distance inside read
-        for &(i, begin_gram) in read_grams.iter() {
-            if !self.graph_qgrams.contains_key(begin_gram) {
+        for (i, begin_gram) in read_grams.iter() {
+            if !self.graph_qgrams.contains_key(begin_gram.as_str()) {
                 continue;
             }
-            for (j, end_gram) in (i + 1..read_grams.len()).map(|j| read_grams[j]).rev() {
-                if !self.graph_qgrams.contains_key(end_gram) {
+            for (j, end_gram) in (i + 1..read_grams.len()).map(|j| &read_grams[j]).rev() {
+                if !self.graph_qgrams.contains_key(end_gram.as_str()) {
                     continue;
                 }
-                for begin_id in &self.graph_qgrams[begin_gram] {
-                    for end_id in &self.graph_qgrams[end_gram] {
+                for begin_id in &self.graph_qgrams[begin_gram.as_str()] {
+                    for end_id in &self.graph_qgrams[end_gram.as_str()] {
                         if begin_id.end() > end_id.start() {
                             // order is wrong
                             continue;
@@ -210,8 +230,8 @@ impl<F: Write> GraphOptimizer<F> {
                         return Some(Bound {
                             start: begin_id.clone(),
                             end: end_id.clone(),
-                            begin_offset: i,
-                            end_offset: j,
+                            begin_offset: *i,
+                            end_offset: *j,
                         });
                     }
                 }
@@ -221,57 +241,84 @@ impl<F: Write> GraphOptimizer<F> {
     }
 
     fn optimize_graph(&mut self, read: &[char]) -> HashGraph {
-        let start_time = Instant::now();
         self.logger.current_read.clear();
+        match self.find_graph(read) {
+            Ok(graph) => {
+                info!(
+                    "Graph reduced from {} to {}",
+                    self.graph.node_count(),
+                    graph.node_count()
+                );
+                self.logger.current_read.set_from_graph(&graph);
+                self.last_graph_success = true;
+                self.logger.log_read();
+                graph
+            }
+            Err(reason) => {
+                warn!("No valid bound found, falling back to whole graph");
+                self.logger.log_failure(reason);
+                self.last_graph_success = false;
+                self.graph.clone()
+            }
+        }
+    }
+
+    fn find_graph(&mut self, read: &[char]) -> Result<HashGraph, ReadResult> {
+        let start_time = Instant::now();
         self.logger.current_read.start_time = Some(start_time);
         let read: String = read.iter().collect();
-        let mut failure = None;
-        for q in (2..=self.max_q).rev() {
-            let Some(bound) = self.find_best_bound(&read, q) else {
-                warn!("No valid bound found for q={}", q);
-                failure = Some(ReadResult::NoBoundFound((start_time, Instant::now())));
-                continue;
+        let Some(bound) = self.find_best_bound(&read, self.q) else {
+                warn!("No valid bound found for q={}", self.q);
+                return Err(ReadResult::NoBoundFound((start_time, Instant::now())));
             };
-            let Some(graph) = self.cut_graph(&bound, read.len(), q) else {
-                warn!("No valid graph for bound found with q={}", q);
-                failure = Some(ReadResult::NoGraphFound((start_time, Instant::now())));
-                continue;
+        let Some(graph) = self.cut_graph(&bound, read.len(), self.q) else {
+                warn!("No valid graph for bound found with q={}", self.q);
+                return Err(ReadResult::NoGraphFound((start_time, Instant::now())));
             };
-            info!(
-                "Graph reduced from {} to {}",
-                self.graph.node_count(),
-                graph.node_count()
-            );
-            info!("Bound start offset {}", bound.begin_offset);
-            info!("Bound end offset {}", bound.end_offset);
-            self.logger.current_read.start_offset = Some(bound.begin_offset);
-            self.logger.current_read.end_offset = Some(bound.end_offset);
-            self.logger.current_read.q = Some(q);
-            self.logger.current_read.set_from_graph(&graph);
-            self.logger.log_read();
-            self.last_graph_success = true;
-            return graph;
-        }
-        warn!("No valid bound found, falling back to whole graph");
-        self.logger
-            .log_failure(failure.expect("q must be greater than 1"));
-        self.last_graph_success = false;
-        self.graph.clone()
+        info!("Bound start offset {}", bound.begin_offset);
+        info!("Bound end offset {}", bound.end_offset);
+        self.logger.current_read.start_offset = Some(bound.begin_offset);
+        self.logger.current_read.end_offset = Some(bound.end_offset);
+        self.logger.current_read.q = Some(self.q);
+        Ok(graph)
     }
+}
+
+fn apply_mask(qgrams: Vec<GramPoint>, mask: &Option<Vec<bool>>) -> GraphIndex {
+    let mut graph_qgrams = HashMap::new();
+    for position in &qgrams {
+        let key = if let Some(mask) = &mask {
+            //apply mask
+            position
+                .value
+                .chars()
+                .enumerate()
+                .filter_map(|(i, c)| if mask[i] { Some(c) } else { None })
+                .collect()
+        } else {
+            position.value.clone()
+        };
+        graph_qgrams
+            .entry(key)
+            .or_insert_with(Vec::new)
+            .push(position.clone());
+    }
+    graph_qgrams
 }
 
 pub fn get_optimizer<'a>(
     graph_path: &str,
     q: usize,
+    mask: Option<String>,
     stats_out_file: Option<String>,
 ) -> Box<dyn Optimizer + 'a> {
     if q == 0 {
         Box::new(PassThrough::new(graph_path))
     } else if let Some(file_name) = stats_out_file {
         let file = File::create(file_name).unwrap();
-        Box::new(GraphOptimizer::new(graph_path, q, file))
+        Box::new(GraphOptimizer::new(graph_path, q, mask, file))
     } else {
-        Box::new(GraphOptimizer::new(graph_path, q, stderr()))
+        Box::new(GraphOptimizer::new(graph_path, q, mask, stderr()))
     }
 }
 
@@ -448,6 +495,7 @@ impl HashGraphExt<'_> for HashGraph {
                     }
                 }
             }
+            cache.retain(|&(_, len), _| len == current_q);
         }
 
         let qgrams: Vec<GramPoint> = cache
@@ -466,7 +514,6 @@ impl HashGraphExt<'_> for HashGraph {
             })
             .collect();
         info!("Found {} non-unique qgrams", qgrams.len());
-
         qgrams
     }
 
@@ -608,7 +655,7 @@ struct StatsLogger<F: Write> {
     current_read: StatsReadBuilder,
     reads: Vec<ReadResult>,
     begin_time: Instant,
-    max_q: usize,
+    q: usize,
     full_graph_len: usize,
     total_sequence_size: usize,
 }
@@ -620,13 +667,13 @@ enum ReadResult {
 }
 
 impl<F: Write> StatsLogger<F> {
-    fn new(out: F, max_q: usize, graph: &HashGraph) -> Self {
+    fn new(out: F, q: usize, graph: &HashGraph) -> Self {
         Self {
             out_file: out,
             current_read: StatsReadBuilder::default(),
             reads: Vec::new(),
             begin_time: Instant::now(),
-            max_q,
+            q,
             full_graph_len: graph.node_count(),
             total_sequence_size: graph
                 .handles_iter()
@@ -694,7 +741,7 @@ impl<F: Write> StatsLogger<F> {
             })
             .collect();
         let buffer = json::object! {
-            max_q: self.max_q,
+            q: self.q,
             full_graph_len: self.full_graph_len,
             total_sequence_size: self.total_sequence_size,
             reads: reads

@@ -56,7 +56,8 @@ fn main() {
 
     //optimize graph
     let file_name = args_parser::get_stats_out_file();
-    let mut graph_optimizer = qgrams::get_optimizer(&graph_path, qgrams_len, file_name);
+    let mask = args_parser::get_qgrams_mask();
+    let mut graph_optimizer = qgrams::get_optimizer(&graph_path, qgrams_len, mask, file_name);
 
     match align_mode {
         //global alignment
