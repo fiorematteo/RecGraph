@@ -24,8 +24,7 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-const DISABLE_NON_OPTIMIZED_ALIGNMENT: bool = true;
-const DISABLE_ALIGNMENT: bool = true;
+const DISABLE_ALIGNMENT: bool = false;
 
 fn main() {
     env_logger::builder()
@@ -65,9 +64,7 @@ fn main() {
             for (i, seq) in sequences.iter().enumerate() {
                 let (graph_struct, hofp_forward, hofp_reverse) =
                     graph_optimizer.generate_sequence_graph(seq);
-                if DISABLE_ALIGNMENT
-                    || (!graph_optimizer.last_graph_success() && DISABLE_NON_OPTIMIZED_ALIGNMENT)
-                {
+                if DISABLE_ALIGNMENT {
                     continue;
                 }
 
@@ -127,9 +124,7 @@ fn main() {
             for (i, seq) in sequences.iter().enumerate() {
                 let (graph_struct, hofp_forward, hofp_reverse) =
                     graph_optimizer.generate_sequence_graph(seq);
-                if DISABLE_ALIGNMENT
-                    || (!graph_optimizer.last_graph_success() && DISABLE_NON_OPTIMIZED_ALIGNMENT)
-                {
+                if DISABLE_ALIGNMENT {
                     continue;
                 }
                 let alignment = if is_x86_feature_detected!("avx2") {
@@ -195,9 +190,7 @@ fn main() {
             for (i, seq) in sequences.iter().enumerate() {
                 let (graph_struct, hofp_forward, hofp_reverse) =
                     graph_optimizer.generate_sequence_graph(seq);
-                if DISABLE_ALIGNMENT
-                    || (!graph_optimizer.last_graph_success() && DISABLE_NON_OPTIMIZED_ALIGNMENT)
-                {
+                if DISABLE_ALIGNMENT {
                     continue;
                 }
                 let bases_to_add = (b + f * seq.len() as f32) as usize;
@@ -242,9 +235,7 @@ fn main() {
             for (i, seq) in sequences.iter().enumerate() {
                 let (graph_struct, hofp_forward, hofp_reverse) =
                     graph_optimizer.generate_sequence_graph(seq);
-                if DISABLE_ALIGNMENT
-                    || (!graph_optimizer.last_graph_success() && DISABLE_NON_OPTIMIZED_ALIGNMENT)
-                {
+                if DISABLE_ALIGNMENT {
                     continue;
                 }
                 let alignment = gap_local_poa::exec(
@@ -282,9 +273,7 @@ fn main() {
         4 => {
             for (i, seq) in sequences.iter().enumerate() {
                 let graph = graph_optimizer.generate_variation_graph(seq, false);
-                if DISABLE_ALIGNMENT
-                    || (!graph_optimizer.last_graph_success() && DISABLE_NON_OPTIMIZED_ALIGNMENT)
-                {
+                if DISABLE_ALIGNMENT {
                     continue;
                 }
                 let mut gaf = pathwise_alignment::exec(seq, &graph, &score_matrix);
@@ -295,9 +284,7 @@ fn main() {
         5 => {
             for (i, seq) in sequences.iter().enumerate() {
                 let graph = graph_optimizer.generate_variation_graph(seq, false);
-                if DISABLE_ALIGNMENT
-                    || (!graph_optimizer.last_graph_success() && DISABLE_NON_OPTIMIZED_ALIGNMENT)
-                {
+                if DISABLE_ALIGNMENT {
                     continue;
                 }
                 let mut gaf = pathwise_alignment_semiglobal::exec(seq, &graph, &score_matrix);
@@ -309,9 +296,7 @@ fn main() {
             let (g_open, g_ext) = args_parser::get_gap_open_gap_ext();
             for (i, seq) in sequences.iter().enumerate() {
                 let graph = graph_optimizer.generate_variation_graph(seq, false);
-                if DISABLE_ALIGNMENT
-                    || (!graph_optimizer.last_graph_success() && DISABLE_NON_OPTIMIZED_ALIGNMENT)
-                {
+                if DISABLE_ALIGNMENT {
                     continue;
                 }
                 let best_path =
@@ -323,9 +308,7 @@ fn main() {
             let (g_open, g_ext) = args_parser::get_gap_open_gap_ext();
             for (i, seq) in sequences.iter().enumerate() {
                 let graph = graph_optimizer.generate_variation_graph(seq, false);
-                if DISABLE_ALIGNMENT
-                    || (!graph_optimizer.last_graph_success() && DISABLE_NON_OPTIMIZED_ALIGNMENT)
-                {
+                if DISABLE_ALIGNMENT {
                     continue;
                 }
                 let best_path =
@@ -338,9 +321,7 @@ fn main() {
             let rbw = args_parser::get_recombination_band_width();
             for (i, seq) in sequences.iter().enumerate() {
                 let graph = graph_optimizer.generate_variation_graph(seq, false);
-                if DISABLE_ALIGNMENT
-                    || (!graph_optimizer.last_graph_success() && DISABLE_NON_OPTIMIZED_ALIGNMENT)
-                {
+                if DISABLE_ALIGNMENT {
                     continue;
                 }
                 let rev_graph = pathwise_graph::create_reverse_path_graph(&graph);

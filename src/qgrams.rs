@@ -66,7 +66,6 @@ struct GraphOptimizer<F: Write> {
     q: usize,
     graph_qgrams: GraphIndex,
     logger: StatsLogger<F>,
-    last_graph_success: bool,
     mask: Option<Vec<bool>>,
 }
 
@@ -98,7 +97,6 @@ impl<F: Write> GraphOptimizer<F> {
             q,
             graph_qgrams,
             logger,
-            last_graph_success: true,
             mask,
         }
     }
@@ -250,14 +248,12 @@ impl<F: Write> GraphOptimizer<F> {
                     graph.node_count()
                 );
                 self.logger.current_read.set_from_graph(&graph);
-                self.last_graph_success = true;
                 self.logger.log_read();
                 graph
             }
             Err(reason) => {
                 warn!("No valid bound found, falling back to whole graph");
                 self.logger.log_failure(reason);
-                self.last_graph_success = false;
                 self.graph.clone()
             }
         }
@@ -356,7 +352,6 @@ type HandleMap = HashMap<usize, String>;
 pub trait Optimizer {
     fn generate_sequence_graph(&mut self, read: &[char]) -> (LnzGraph, HandleMap, HandleMap);
     fn generate_variation_graph(&mut self, read: &[char], is_reversed: bool) -> PathGraph;
-    fn last_graph_success(&mut self) -> bool;
 }
 
 impl Optimizer for PassThrough {
@@ -375,10 +370,6 @@ impl Optimizer for PassThrough {
             self.variation_graph.clone()
         }
     }
-
-    fn last_graph_success(&mut self) -> bool {
-        false
-    }
 }
 
 impl<F: Write> Optimizer for GraphOptimizer<F> {
@@ -395,10 +386,6 @@ impl<F: Write> Optimizer for GraphOptimizer<F> {
     fn generate_variation_graph(&mut self, read: &[char], is_reversed: bool) -> PathGraph {
         let hashgraph = self.optimize_graph(read);
         create_path_graph(&hashgraph, is_reversed)
-    }
-
-    fn last_graph_success(&mut self) -> bool {
-        self.last_graph_success
     }
 }
 
