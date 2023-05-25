@@ -12,7 +12,6 @@ use handlegraph::{
     handlegraph::HandleGraph,
     hashgraph::{HashGraph, Path},
 };
-use log::{info, warn};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::File,
@@ -90,7 +89,6 @@ impl<F: Write> GraphOptimizer<F> {
         let mut graph_qgrams: GraphIndex = apply_mask(qgrams, &mask);
         graph_qgrams.retain(|_, v| v.len() == 1); // remove duplicates
 
-        info!("Found {} unique qgrams", graph_qgrams.len());
         let logger = StatsLogger::new(stats_out_file, q, &graph);
         Self {
             graph,
@@ -117,7 +115,6 @@ impl<F: Write> GraphOptimizer<F> {
             .successors_bfs(bound.start.end(), |_, depth| depth == read_len);
 
         if direct_bfs.intersection(&reverse_bfs).next().is_none() {
-            warn!("No intersection found between direct and reverse bfs");
             return None;
         }
 
@@ -199,11 +196,6 @@ impl<F: Write> GraphOptimizer<F> {
         }
         read_grams.retain(|(_, v)| counter[v.as_str()] == 1);
 
-        info!(
-            "Found {} unique qgrams in {} long read",
-            read_grams.len(),
-            read.len()
-        );
         self.logger.current_read.unique_qgrams = Some(read_grams.len());
         self.find_first_valid_gram(&read_grams)
     }
@@ -242,17 +234,11 @@ impl<F: Write> GraphOptimizer<F> {
         self.logger.current_read.clear();
         match self.find_graph(read) {
             Ok(graph) => {
-                info!(
-                    "Graph reduced from {} to {}",
-                    self.graph.node_count(),
-                    graph.node_count()
-                );
                 self.logger.current_read.set_from_graph(&graph);
                 self.logger.log_read();
                 graph
             }
             Err(reason) => {
-                warn!("No valid bound found, falling back to whole graph");
                 self.logger.log_failure(reason);
                 self.graph.clone()
             }
@@ -264,15 +250,11 @@ impl<F: Write> GraphOptimizer<F> {
         self.logger.current_read.start_time = Some(start_time);
         let read: String = read.iter().collect();
         let Some(bound) = self.find_best_bound(&read, self.q) else {
-                warn!("No valid bound found for q={}", self.q);
                 return Err(ReadResult::NoBoundFound((start_time, Instant::now())));
             };
         let Some(graph) = self.cut_graph(&bound, read.len(), self.q) else {
-                warn!("No valid graph for bound found with q={}", self.q);
                 return Err(ReadResult::NoGraphFound((start_time, Instant::now())));
             };
-        info!("Bound start offset {}", bound.begin_offset);
-        info!("Bound end offset {}", bound.end_offset);
         self.logger.current_read.start_offset = Some(bound.begin_offset);
         self.logger.current_read.end_offset = Some(bound.end_offset);
         self.logger.current_read.q = Some(self.q);
@@ -500,7 +482,6 @@ impl HashGraphExt<'_> for HashGraph {
                 GramPoint { value, points }
             })
             .collect();
-        info!("Found {} non-unique qgrams", qgrams.len());
         qgrams
     }
 

@@ -27,11 +27,6 @@ static GLOBAL: Jemalloc = Jemalloc;
 const DISABLE_ALIGNMENT: bool = false;
 
 fn main() {
-    env_logger::builder()
-        .format_target(false)
-        .format_module_path(true)
-        .init();
-
     let now = SystemTime::now();
 
     //get q lenght
