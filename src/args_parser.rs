@@ -167,6 +167,14 @@ struct Args {
         help = "Mask for sparse qgrams, should be a string of 1 and 0 as long as q"
     )]
     qgrams_mask: Option<String>,
+
+    #[clap(
+        help_heading = "Qgrams optimization",
+        long = "disable-alignment",
+        default_value_t = false,
+        help = "Disable alignment, only compute qgrams. Useful for debugging purpuses"
+    )]
+    disable_alignment: bool,
 }
 pub fn get_base_multi_recombination_cost() -> (i32, f32) {
     let args = Args::parse();
@@ -236,4 +244,9 @@ pub fn get_stats_out_file() -> Option<String> {
 pub fn get_qgrams_mask() -> Option<String> {
     let args = Args::parse();
     args.qgrams_mask
+}
+
+pub fn get_disable_alignment() -> bool {
+    let args = Args::parse();
+    args.disable_alignment
 }
