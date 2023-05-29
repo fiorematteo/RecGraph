@@ -66,6 +66,7 @@ struct GraphOptimizer<F: Write> {
     graph_qgrams: GraphIndex,
     logger: StatsLogger<F>,
     mask: Option<Vec<bool>>,
+    last_graph_non_optimized: bool,
 }
 
 impl<F: Write> GraphOptimizer<F> {
@@ -96,6 +97,7 @@ impl<F: Write> GraphOptimizer<F> {
             graph_qgrams,
             logger,
             mask,
+            last_graph_non_optimized: false,
         }
     }
 
@@ -234,11 +236,13 @@ impl<F: Write> GraphOptimizer<F> {
         self.logger.current_read.clear();
         match self.find_graph(read) {
             Ok(graph) => {
+                self.last_graph_non_optimized = false;
                 self.logger.current_read.set_from_graph(&graph);
                 self.logger.log_read();
                 graph
             }
             Err(reason) => {
+                self.last_graph_non_optimized = true;
                 self.logger.log_failure(reason);
                 self.graph.clone()
             }
@@ -352,6 +356,10 @@ impl Optimizer for PassThrough {
             self.variation_graph.clone()
         }
     }
+
+    fn last_graph_non_optimized(&self) -> bool {
+        true
+    }
 }
 
 impl<F: Write> Optimizer for GraphOptimizer<F> {
@@ -368,6 +376,10 @@ impl<F: Write> Optimizer for GraphOptimizer<F> {
     fn generate_variation_graph(&mut self, read: &[char], is_reversed: bool) -> PathGraph {
         let hashgraph = self.optimize_graph(read);
         create_path_graph(&hashgraph, is_reversed)
+    }
+
+    fn last_graph_non_optimized(&self) -> bool {
+        self.last_graph_non_optimized
     }
 }
 

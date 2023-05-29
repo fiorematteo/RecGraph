@@ -171,10 +171,16 @@ struct Args {
     #[clap(
         help_heading = "Qgrams optimization",
         long = "disable-alignment",
-        default_value_t = false,
         help = "Disable alignment, only compute qgrams. Useful for debugging purpuses"
     )]
     disable_alignment: bool,
+
+    #[clap(
+        help_heading = "Qgrams optimization",
+        long = "skip-slow-alignment",
+        help = "Skip alignment if qgrams optimization fails"
+    )]
+    skip_slow_alignment: bool,
 }
 pub fn get_base_multi_recombination_cost() -> (i32, f32) {
     let args = Args::parse();
@@ -249,4 +255,9 @@ pub fn get_qgrams_mask() -> Option<String> {
 pub fn get_disable_alignment() -> bool {
     let args = Args::parse();
     args.disable_alignment
+}
+
+pub fn get_skip_slow_alignment() -> bool {
+    let args = Args::parse();
+    args.skip_slow_alignment
 }
