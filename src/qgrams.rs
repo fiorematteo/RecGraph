@@ -16,6 +16,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::File,
     io::{stderr, Write},
+    rc::Rc,
     time::Instant,
 };
 
@@ -116,9 +117,8 @@ impl<F: Write> GraphOptimizer<F> {
             .graph
             .successors_bfs(bound.start.end(), |_, depth| depth == read_len);
 
-        if direct_bfs.intersection(&reverse_bfs).next().is_none() {
-            return None;
-        }
+        // no intersection
+        direct_bfs.intersection(&reverse_bfs).next()?;
 
         let reachable_points: HashSet<_> = direct_bfs
             .union(&reverse_bfs)
@@ -305,11 +305,11 @@ pub fn get_optimizer<'a>(
 }
 
 struct PassThrough {
-    sequence_graph: LnzGraph,
-    hofp_forward: HandleMap,
-    hofp_reverse: HandleMap,
-    variation_graph: PathGraph,
-    inverse_variation_graph: PathGraph,
+    sequence_graph: Rc<LnzGraph>,
+    hofp_forward: Rc<HandleMap>,
+    hofp_reverse: Rc<HandleMap>,
+    variation_graph: Rc<PathGraph>,
+    inverse_variation_graph: Rc<PathGraph>,
 }
 
 impl PassThrough {
@@ -325,23 +325,30 @@ impl PassThrough {
         let variation_graph = create_path_graph(&hashgraph, false);
         let inverse_variation_graph = create_path_graph(&hashgraph, true);
         Self {
-            sequence_graph,
-            hofp_forward,
-            hofp_reverse,
-            variation_graph,
-            inverse_variation_graph,
+            sequence_graph: sequence_graph.into(),
+            hofp_forward: hofp_forward.into(),
+            hofp_reverse: hofp_reverse.into(),
+            variation_graph: variation_graph.into(),
+            inverse_variation_graph: inverse_variation_graph.into(),
         }
     }
 }
 
 type HandleMap = HashMap<usize, String>;
 pub trait Optimizer {
-    fn generate_sequence_graph(&mut self, read: &[char]) -> (LnzGraph, HandleMap, HandleMap);
-    fn generate_variation_graph(&mut self, read: &[char], is_reversed: bool) -> PathGraph;
+    fn generate_sequence_graph(
+        &mut self,
+        read: &[char],
+    ) -> (Rc<LnzGraph>, Rc<HandleMap>, Rc<HandleMap>);
+    fn generate_variation_graph(&mut self, read: &[char], is_reversed: bool) -> Rc<PathGraph>;
+    fn last_graph_non_optimized(&self) -> bool;
 }
 
 impl Optimizer for PassThrough {
-    fn generate_sequence_graph(&mut self, _read: &[char]) -> (LnzGraph, HandleMap, HandleMap) {
+    fn generate_sequence_graph(
+        &mut self,
+        _read: &[char],
+    ) -> (Rc<LnzGraph>, Rc<HandleMap>, Rc<HandleMap>) {
         (
             self.sequence_graph.clone(),
             self.hofp_forward.clone(),
@@ -349,7 +356,7 @@ impl Optimizer for PassThrough {
         )
     }
 
-    fn generate_variation_graph(&mut self, _read: &[char], is_reversed: bool) -> PathGraph {
+    fn generate_variation_graph(&mut self, _read: &[char], is_reversed: bool) -> Rc<PathGraph> {
         if is_reversed {
             self.inverse_variation_graph.clone()
         } else {
@@ -363,19 +370,26 @@ impl Optimizer for PassThrough {
 }
 
 impl<F: Write> Optimizer for GraphOptimizer<F> {
-    fn generate_sequence_graph(&mut self, read: &[char]) -> (LnzGraph, HandleMap, HandleMap) {
+    fn generate_sequence_graph(
+        &mut self,
+        read: &[char],
+    ) -> (Rc<LnzGraph>, Rc<HandleMap>, Rc<HandleMap>) {
         let hashgraph = self.optimize_graph(read);
         let graph_struct = create_graph_struct(&hashgraph, false);
         let hofp_forward =
             create_handle_pos_in_lnz_from_hashgraph(&graph_struct.nwp, &hashgraph, false);
         let hofp_reverse =
             create_handle_pos_in_lnz_from_hashgraph(&graph_struct.nwp, &hashgraph, true);
-        (graph_struct, hofp_forward, hofp_reverse)
+        (
+            graph_struct.into(),
+            hofp_forward.into(),
+            hofp_reverse.into(),
+        )
     }
 
-    fn generate_variation_graph(&mut self, read: &[char], is_reversed: bool) -> PathGraph {
+    fn generate_variation_graph(&mut self, read: &[char], is_reversed: bool) -> Rc<PathGraph> {
         let hashgraph = self.optimize_graph(read);
-        create_path_graph(&hashgraph, is_reversed)
+        create_path_graph(&hashgraph, is_reversed).into()
     }
 
     fn last_graph_non_optimized(&self) -> bool {
