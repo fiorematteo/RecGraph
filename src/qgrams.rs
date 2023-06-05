@@ -59,7 +59,7 @@ struct Bound {
     begin_offset: usize,
     end_offset: usize,
 }
-type GraphIndex = HashMap<String, Vec<GramPoint>>;
+type GraphIndex = HashMap<String, GramPoint>;
 
 struct GraphOptimizer<F: Write> {
     graph: HashGraph,
@@ -88,8 +88,12 @@ impl<F: Write> GraphOptimizer<F> {
                 .collect()
         });
 
-        let mut graph_qgrams: GraphIndex = apply_mask(qgrams, &mask);
+        let mut graph_qgrams: HashMap<String, Vec<GramPoint>> = apply_mask(qgrams, &mask);
         graph_qgrams.retain(|_, v| v.len() == 1); // remove duplicates
+        let graph_qgrams: GraphIndex = graph_qgrams
+            .into_iter()
+            .map(|(k, v)| (k, v[0].clone()))
+            .collect();
 
         let logger = StatsLogger::new(stats_out_file, q, &graph);
         Self {
@@ -197,35 +201,108 @@ impl<F: Write> GraphOptimizer<F> {
             *counter.entry(gram.clone()).or_insert(0) += 1;
         }
         read_grams.retain(|(_, v)| counter[v.as_str()] == 1);
+        read_grams.retain(|(_, v)| self.graph_qgrams.contains_key(v));
 
         self.logger.current_read.unique_qgrams = Some(read_grams.len());
         self.find_first_valid_gram(&read_grams)
     }
 
     fn find_first_valid_gram(&self, read_grams: &[(usize, String)]) -> Option<Bound> {
-        // maximising distance inside read
-        for (i, begin_gram) in read_grams.iter() {
-            if !self.graph_qgrams.contains_key(begin_gram.as_str()) {
-                continue;
-            }
-            for (j, end_gram) in (i + 1..read_grams.len()).map(|j| &read_grams[j]).rev() {
-                if !self.graph_qgrams.contains_key(end_gram.as_str()) {
+        let (i, begin_gram) = self.find_coherent_left_qgrams(read_grams);
+        let (j, end_gram) = self.find_coherent_right_qgrams(read_grams);
+        let begin_id = &self.graph_qgrams[begin_gram.as_str()];
+        let end_id = &self.graph_qgrams[end_gram.as_str()];
+
+        if begin_id.end() > end_id.start() {
+            // order is wrong
+            None
+        } else {
+            // possible invalid pair (parallel qgrams)
+            Some(Bound {
+                start: begin_id.clone(),
+                end: end_id.clone(),
+                begin_offset: i,
+                end_offset: j,
+            })
+        }
+    }
+
+    fn filter_non_coherent_qgrams(
+        &self,
+        qgrams: &[(usize, String)],
+        infinity: usize,
+    ) -> Vec<(usize, String)> {
+        let nodes: Vec<_> = qgrams
+            .iter()
+            .map(|(_, gram)| &self.graph_qgrams[gram])
+            .collect();
+        let mut summed_errors = HashMap::new();
+        for (i, x) in nodes.iter().enumerate() {
+            for (j, y) in nodes.iter().enumerate() {
+                if i == j {
                     continue;
                 }
-                for begin_id in &self.graph_qgrams[begin_gram.as_str()] {
-                    for end_id in &self.graph_qgrams[end_gram.as_str()] {
-                        if begin_id.end() > end_id.start() {
-                            // order is wrong
-                            continue;
-                        }
-                        // possible invalid pair (parallel qgrams)
-                        return Some(Bound {
-                            start: begin_id.clone(),
-                            end: end_id.clone(),
-                            begin_offset: *i,
-                            end_offset: *j,
-                        });
-                    }
+                if qgrams[i].0 > qgrams[j].0 {
+                    // order is wrong
+                    continue;
+                }
+                let read_distance = qgrams[i].0.abs_diff(qgrams[j].0);
+                let graph_distance = self.graph_distance(x.start(), y.start(), read_distance * 2);
+                let error = graph_distance.unwrap_or(infinity).abs_diff(read_distance);
+                *summed_errors.entry(i).or_insert(0) += error;
+                *summed_errors.entry(j).or_insert(0) += error;
+            }
+        }
+
+        // find median
+        let mut summed_errors = Vec::from_iter(summed_errors);
+        summed_errors.sort_by_key(|(_, v)| *v);
+        let median = summed_errors[summed_errors.len() / 2].1;
+        summed_errors.retain(|(_, v)| *v <= median);
+        let valid_indexes: Vec<_> = summed_errors.clone().into_iter().map(|(i, _)| i).collect();
+
+        qgrams
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| valid_indexes.contains(i))
+            .map(|(_, v)| v.clone())
+            .collect()
+    }
+
+    fn find_coherent_right_qgrams(&self, read_grams: &[(usize, String)]) -> (usize, String) {
+        let qgrams = &read_grams[read_grams.len() - 5..];
+        // no distance should be bigger then this
+        let infinity = read_grams.last().unwrap().0 * 10;
+        self.filter_non_coherent_qgrams(qgrams, infinity)
+            .last()
+            .unwrap()
+            .clone()
+    }
+
+    fn find_coherent_left_qgrams(&self, read_grams: &[(usize, String)]) -> (usize, String) {
+        let qgrams = &read_grams[..5];
+        // no distance should be bigger then this
+        let infinity = read_grams.last().unwrap().0 * 10;
+        self.filter_non_coherent_qgrams(qgrams, infinity)
+            .first()
+            .unwrap()
+            .clone()
+    }
+
+    fn graph_distance(&self, start: Point, end: Point, max_distance: usize) -> Option<usize> {
+        let mut visited = HashSet::new();
+        let mut queue: VecDeque<(Point, usize)> = vec![(start, 0)].into();
+        while let Some((node, depth)) = queue.pop_front() {
+            if node == end {
+                return Some(depth);
+            }
+            if depth > max_distance {
+                return None;
+            }
+            for next in self.graph.iter_successors(node) {
+                if !visited.contains(&next) {
+                    queue.push_back((next, depth + 1));
+                    visited.insert(next);
                 }
             }
         }
@@ -266,7 +343,7 @@ impl<F: Write> GraphOptimizer<F> {
     }
 }
 
-fn apply_mask(qgrams: Vec<GramPoint>, mask: &Option<Vec<bool>>) -> GraphIndex {
+fn apply_mask(qgrams: Vec<GramPoint>, mask: &Option<Vec<bool>>) -> HashMap<String, Vec<GramPoint>> {
     let mut graph_qgrams = HashMap::new();
     for position in &qgrams {
         let key = if let Some(mask) = &mask {
