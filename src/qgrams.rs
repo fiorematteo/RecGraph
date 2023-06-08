@@ -208,6 +208,10 @@ impl<F: Write> GraphOptimizer<F> {
     }
 
     fn find_first_valid_gram(&self, read_grams: &[(usize, String)]) -> Option<Bound> {
+        if read_grams.len() < 5 {
+            // not enough qgrams
+            return None;
+        }
         let (i, begin_gram) = self.find_coherent_left_qgrams(read_grams);
         let (j, end_gram) = self.find_coherent_right_qgrams(read_grams);
         let begin_id = &self.graph_qgrams[begin_gram.as_str()];
