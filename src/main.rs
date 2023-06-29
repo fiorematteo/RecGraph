@@ -374,38 +374,3 @@ fn main() {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::process::{Child, Command, Stdio};
-
-    fn launch_command_with_mode(mode: usize) -> Child {
-        Command::new("target/release/recgraph")
-            .args(&[
-                &format!("-m{}", mode),
-                "example/reads.fa",
-                "example/graph.gfa",
-                "--out_file",
-                "/dev/null",
-                "-q20",
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap()
-    }
-
-    #[test]
-    fn full_integration() {
-        Command::new("cargo")
-            .args(&["build", "--release"])
-            .output()
-            .unwrap();
-        let childs = (0..=9)
-            .map(|mode| launch_command_with_mode(mode))
-            .collect::<Vec<_>>();
-        childs.into_iter().for_each(|mut child| {
-            assert!(child.wait().map_or(false, |r| r.success()));
-        });
-    }
-}

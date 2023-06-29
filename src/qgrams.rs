@@ -22,8 +22,8 @@ use std::{
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 struct GramPoint {
-    pub points: Vec<Point>,
-    pub value: String,
+    points: Vec<Point>,
+    value: String,
 }
 
 impl GramPoint {
@@ -37,9 +37,18 @@ impl GramPoint {
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq, Copy)]
-struct Point {
+pub struct Point {
     pub node: NodeId,
     pub offset: usize,
+}
+
+impl From<(usize, usize)> for Point {
+    fn from(value: (usize, usize)) -> Self {
+        Self {
+            node: value.0.into(),
+            offset: value.1,
+        }
+    }
 }
 
 impl PartialOrd for Point {
@@ -53,12 +62,40 @@ impl PartialOrd for Point {
 }
 
 #[derive(Debug, Clone)]
-struct Bound {
+pub struct Bound {
     start: GramPoint,
     end: GramPoint,
     begin_offset: usize,
     end_offset: usize,
 }
+
+impl Bound {
+    pub fn new(
+        first_seed: Vec<impl Into<Point>>,
+        second_seed: Vec<impl Into<Point>>,
+        first_seed_position_in_read: usize,
+        second_seed_position_in_read: usize,
+    ) -> Self {
+        let first_seed = first_seed.into_iter().map(|p| p.into()).collect::<Vec<_>>();
+        let second_seed = second_seed
+            .into_iter()
+            .map(|p| p.into())
+            .collect::<Vec<_>>();
+        Self {
+            start: GramPoint {
+                value: first_seed.iter().map(|p| p.node.to_string()).collect(),
+                points: first_seed,
+            },
+            end: GramPoint {
+                value: second_seed.iter().map(|p| p.node.to_string()).collect(),
+                points: second_seed,
+            },
+            begin_offset: first_seed_position_in_read,
+            end_offset: second_seed_position_in_read,
+        }
+    }
+}
+
 type GraphIndex = HashMap<String, GramPoint>;
 
 struct GraphOptimizer<F: Write> {
@@ -106,13 +143,13 @@ impl<F: Write> GraphOptimizer<F> {
         }
     }
 
-    fn cut_graph(&mut self, bound: &Bound, read_len: usize, q: usize) -> Option<HashGraph> {
+    fn cut_graph(&self, bound: &Bound, read_len: usize) -> Option<HashGraph> {
         let before_nodes = self
             .graph
             .predecessors_bfs(bound.start.start(), |_, d| d == bound.begin_offset);
-        let after_nodes = self
-            .graph
-            .successors_bfs(bound.end.end(), |_, d| d == read_len - bound.end_offset - q);
+        let after_nodes = self.graph.successors_bfs(bound.end.end(), |_, d| {
+            d == read_len - bound.end_offset - self.q
+        });
 
         let direct_bfs = self
             .graph
@@ -178,9 +215,9 @@ impl<F: Write> GraphOptimizer<F> {
         })
     }
 
-    fn find_best_bound(&mut self, read: &str, q: usize) -> Option<Bound> {
-        let mut read_grams: Vec<(usize, String)> = (0..=read.len() - q)
-            .map(|i| (i, &read[i..i + q]))
+    fn find_best_bound(&mut self, read: &str) -> Option<Bound> {
+        let mut read_grams: Vec<(usize, String)> = (0..=read.len() - self.q)
+            .map(|i| (i, &read[i..i + self.q]))
             .map(|(i, read)| (i, read.to_string()))
             .collect();
 
@@ -334,10 +371,10 @@ impl<F: Write> GraphOptimizer<F> {
         let start_time = Instant::now();
         self.logger.current_read.start_time = Some(start_time);
         let read: String = read.iter().collect();
-        let Some(bound) = self.find_best_bound(&read, self.q) else {
+        let Some(bound) = self.find_best_bound(&read) else {
                 return Err(ReadResult::NoBoundFound((start_time, Instant::now())));
             };
-        let Some(graph) = self.cut_graph(&bound, read.len(), self.q) else {
+        let Some(graph) = self.cut_graph(&bound, read.len()) else {
                 return Err(ReadResult::NoGraphFound((start_time, Instant::now())));
             };
         self.logger.current_read.start_offset = Some(bound.begin_offset);
@@ -422,6 +459,17 @@ pub trait Optimizer {
         read: &[char],
     ) -> (Rc<LnzGraph>, Rc<HandleMap>, Rc<HandleMap>);
     fn generate_variation_graph(&mut self, read: &[char], is_reversed: bool) -> Rc<PathGraph>;
+    fn generate_sequence_graph_from_bound(
+        &mut self,
+        read: &[char],
+        bound: &Bound,
+    ) -> Option<(Rc<LnzGraph>, Rc<HandleMap>, Rc<HandleMap>)>;
+    fn generate_variation_graph_from_bound(
+        &mut self,
+        read: &[char],
+        bound: &Bound,
+        is_reversed: bool,
+    ) -> Option<Rc<PathGraph>>;
     fn last_graph_non_optimized(&self) -> bool;
 }
 
@@ -447,6 +495,23 @@ impl Optimizer for PassThrough {
 
     fn last_graph_non_optimized(&self) -> bool {
         true
+    }
+
+    fn generate_sequence_graph_from_bound(
+        &mut self,
+        _read: &[char],
+        _bound: &Bound,
+    ) -> Option<(Rc<LnzGraph>, Rc<HandleMap>, Rc<HandleMap>)> {
+        None
+    }
+
+    fn generate_variation_graph_from_bound(
+        &mut self,
+        _read: &[char],
+        _bound: &Bound,
+        _is_reversed: bool,
+    ) -> Option<Rc<PathGraph>> {
+        None
     }
 }
 
@@ -475,6 +540,42 @@ impl<F: Write> Optimizer for GraphOptimizer<F> {
 
     fn last_graph_non_optimized(&self) -> bool {
         self.last_graph_non_optimized
+    }
+
+    // lenght of the seeds must be equal to q
+    fn generate_sequence_graph_from_bound(
+        &mut self,
+        read: &[char],
+        bound: &Bound,
+    ) -> Option<(Rc<LnzGraph>, Rc<HandleMap>, Rc<HandleMap>)> {
+        if bound.start.points.len() != self.q || bound.end.points.len() != self.q {
+            return None;
+        }
+        let hashgraph = self.cut_graph(bound, read.len())?;
+        let graph_struct = create_graph_struct(&hashgraph, false);
+        let hofp_forward =
+            create_handle_pos_in_lnz_from_hashgraph(&graph_struct.nwp, &hashgraph, false);
+        let hofp_reverse =
+            create_handle_pos_in_lnz_from_hashgraph(&graph_struct.nwp, &hashgraph, true);
+        Some((
+            graph_struct.into(),
+            hofp_forward.into(),
+            hofp_reverse.into(),
+        ))
+    }
+
+    // lenght of the seeds must be equal to q
+    fn generate_variation_graph_from_bound(
+        &mut self,
+        read: &[char],
+        bound: &Bound,
+        is_reversed: bool,
+    ) -> Option<Rc<PathGraph>> {
+        if bound.start.points.len() != self.q || bound.end.points.len() != self.q {
+            return None;
+        }
+        let hashgraph = self.cut_graph(bound, read.len())?;
+        Some(create_path_graph(&hashgraph, is_reversed).into())
     }
 }
 
